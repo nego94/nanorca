@@ -101,13 +101,3 @@ nanorca/
 ├── .env.example
 └── Makefile
 ```
-
-## Safety Rules (Non-Negotiable)
-
-- ⛔ Never set `PAPER_TRADING=false` before 14 days of profitable paper trading
-- ⛔ Never commit `.env` to git
-- ⛔ Never enable Withdraw on Binance API key
-- ⛔ Never expose PostgreSQL port externally
-- ⛔ Never exceed 3x leverage on Binance
-
----
