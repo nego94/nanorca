@@ -1,0 +1,97 @@
+# NANORCA — Ruflo / Claude Flow Integration
+# ══════════════════════════════════════════════════════════════════════════════
+# Ruflo (claude-flow) is a multi-agent orchestration layer built on top of
+# the Anthropic Claude API. It allows NANORCA to run multiple specialized
+# "agent" roles in parallel:
+#
+#   • MarketAnalyst  — scans and interprets market data
+#   • RiskAuditor    — second-checks every trade proposal
+#   • NewsMonitor    — watches Twitter/X + CMC for breaking news
+#   • LearningAgent  — runs weekly performance analysis
+#
+# Ruflo is invoked via MCP (Model Context Protocol) and coordinates these
+# agents automatically. Each agent talks to Claude with a specialized prompt.
+#
+# ── How to install Ruflo ──────────────────────────────────────────────────
+# npx ruflo@latest init          # first time setup
+# npx ruflo@latest start         # starts the MCP orchestrator
+#
+# ── Status: PHASE 6 (planned) ─────────────────────────────────────────────
+# The current skeleton uses single-agent Claude calls (claude_brain.py).
+# Ruflo multi-agent will be layered on in Phase 6 after live trading is stable.
+# ══════════════════════════════════════════════════════════════════════════════
+
+version: "1.0"
+project: nanorca
+
+# ── Agents ────────────────────────────────────────────────────────────────────
+agents:
+  market_analyst:
+    role: >
+      You are the NANORCA Market Analyst.
+      Your job: scan and interpret market data across Polymarket, Hyperliquid,
+      and Binance. Identify the top 3 opportunities per scan cycle.
+      Output structured JSON for the RiskAuditor.
+    model: claude-haiku-4-5-20251001
+    max_tokens: 800
+
+  risk_auditor:
+    role: >
+      You are the NANORCA Risk Auditor.
+      You receive a trade proposal from the MarketAnalyst and independently
+      evaluate whether the risk/reward makes sense. You are skeptical by nature.
+      Lower confidence scores when in doubt. Output final trade JSON.
+    model: claude-haiku-4-5-20251001
+    max_tokens: 600
+
+  news_monitor:
+    role: >
+      You are the NANORCA News Monitor.
+      Continuously watch for breaking news from crypto markets.
+      Assign impact scores 0-100 and ticker symbols to each news item.
+      Alert immediately on score > 80.
+    model: claude-haiku-4-5-20251001
+    max_tokens: 400
+
+  learning_agent:
+    role: >
+      You are the NANORCA Learning Agent.
+      Every Sunday, analyze 7 days of trade outcomes and recommend
+      new signal weights. Be data-driven, not optimistic.
+    model: claude-sonnet-4-6
+    max_tokens: 2000
+
+# ── Orchestration flow ────────────────────────────────────────────────────────
+flows:
+  trading_cycle:
+    description: "Main per-cycle decision flow"
+    steps:
+      - agent: market_analyst
+        input: market_snapshots
+      - agent: risk_auditor
+        input: market_analyst.output
+        condition: "confidence > 50"  # Don't bother auditing obvious skips
+      - action: execute_trade
+        input: risk_auditor.output
+        condition: "confidence >= 65"
+
+  weekly_learning:
+    description: "Sunday self-improvement flow"
+    steps:
+      - agent: learning_agent
+        input: trade_history_7d
+      - action: update_signal_weights
+        condition: "confidence_in_analysis >= 70"
+
+# ── MCP configuration ─────────────────────────────────────────────────────────
+mcp:
+  transport: stdio
+  timeout_seconds: 30
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+# Currently claude_brain.py handles all decisions with single-agent calls.
+# When Ruflo is activated (Phase 6):
+#   1. Install: npx ruflo@latest init
+#   2. Set ANTHROPIC_API_KEY in environment
+#   3. Run: npx ruflo@latest start --config ruflo.yml
+#   4. Update order_router.py to call Ruflo MCP instead of claude_brain directly

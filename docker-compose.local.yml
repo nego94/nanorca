@@ -1,0 +1,44 @@
+# docker-compose.local.yml — Local laptop testing override
+# ══════════════════════════════════════════════════════════════════════════════
+# Use this file when running NANORCA on your LOCAL machine (Windows/Mac laptop).
+# It overrides the production docker-compose.yml with laptop-friendly settings:
+#   - Grafana accessible at localhost:3000
+#   - Postgres exposed on localhost:5432 (useful for DB tools like TablePlus/DBeaver)
+#   - Reduced resource limits (works on 8GB RAM laptop)
+#   - No restart:unless-stopped (so containers stop when you close Docker)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up
+#
+# Or add a shortcut alias:
+#   alias nanorca-local='docker compose -f docker-compose.yml -f docker-compose.local.yml'
+# ══════════════════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+  executor:
+    restart: "no"               # Don't auto-restart on laptop
+    environment:
+      - LOG_LEVEL=debug         # More verbose for local debugging
+
+  bot:
+    restart: "no"
+    environment:
+      - LOG_LEVEL=debug
+      - PAPER_TRADING=true      # Always force paper on local
+
+  postgres:
+    restart: "no"
+    ports:
+      - "5432:5432"             # Expose for DB tools (TablePlus, DBeaver, etc.)
+                                # NEVER expose this in production!
+
+  prometheus:
+    restart: "no"
+    ports:
+      - "9090:9090"             # Access Prometheus UI at localhost:9090
+
+  grafana:
+    restart: "no"
+    # Grafana is already on port 3000 in main compose — open localhost:3000

@@ -1,0 +1,133 @@
+syntax = "proto3";
+
+package nanorca;
+option go_package = "github.com/nanorca/executor/proto";
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NANORCA gRPC Service Definition
+// Shared between Go executor (server) and Python brain (client).
+// Go generates: proto/*.pb.go
+// Python generates: proto/*_pb2.py + *_pb2_grpc.py
+//
+// To regenerate:
+//   make proto
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Market Data ──────────────────────────────────────────────────────────────
+
+message MarketSnapshot {
+  string exchange        = 1;  // "binance" | "polymarket" | "hyperliquid"
+  string market          = 2;  // "BTCUSDT" | "BTC-YES" | etc.
+  double price           = 3;
+  double bid             = 4;
+  double ask             = 5;
+  double volume_24h      = 6;
+  double funding_rate    = 7;  // Hyperliquid / Binance perp only
+  int64  timestamp_ms    = 8;  // Unix ms
+  bool   available       = 9;  // false if feed is down
+}
+
+message MarketScanRequest {
+  repeated string markets  = 1;  // empty = scan all configured markets
+}
+
+message MarketScanResponse {
+  repeated MarketSnapshot snapshots = 1;
+  int64   scanned_at_ms             = 2;
+  int32   error_count               = 3;  // how many markets failed to fetch
+}
+
+// ── Order Execution ───────────────────────────────────────────────────────────
+
+enum OrderSide {
+  ORDER_SIDE_UNSPECIFIED = 0;
+  BUY                    = 1;
+  SELL                   = 2;
+  LONG                   = 3;
+  SHORT                  = 4;
+}
+
+message PlaceOrderRequest {
+  string    exchange       = 1;
+  string    market         = 2;
+  OrderSide side           = 3;
+  double    size_usd       = 4;
+  double    stop_loss_pct  = 5;  // 0 = no stop loss
+  bool      paper          = 6;  // true = simulate, don't touch real exchange
+}
+
+message PlaceOrderResponse {
+  bool   success           = 1;
+  string exchange_order_id = 2;
+  double filled_price      = 3;
+  double filled_size_usd   = 4;
+  double slippage_pct      = 5;
+  string error             = 6;  // non-empty on failure
+}
+
+message CloseOrderRequest {
+  string exchange          = 1;
+  string exchange_order_id = 2;
+  string market            = 3;
+  bool   paper             = 4;
+}
+
+message CloseOrderResponse {
+  bool   success           = 1;
+  double exit_price        = 2;
+  double pnl_usd           = 3;
+  double fees_usd          = 4;
+  string error             = 5;
+}
+
+// ── Open Positions ────────────────────────────────────────────────────────────
+
+message OpenPosition {
+  string    exchange_order_id = 1;
+  string    exchange          = 2;
+  string    market            = 3;
+  OrderSide side              = 4;
+  double    entry_price       = 5;
+  double    current_price     = 6;
+  double    size_usd          = 7;
+  double    unrealized_pnl    = 8;
+  int64     opened_at_ms      = 9;
+}
+
+message GetPositionsRequest {}
+
+message GetPositionsResponse {
+  repeated OpenPosition positions = 1;
+}
+
+// ── Health ────────────────────────────────────────────────────────────────────
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool   ok              = 1;
+  string status          = 2;  // human-readable
+  int64  uptime_seconds  = 3;
+  bool   binance_ok      = 4;
+  bool   polymarket_ok   = 5;
+  bool   hyperliquid_ok  = 6;
+}
+
+// ── Service Definition ────────────────────────────────────────────────────────
+
+service ExecutorService {
+  // Scan all markets in parallel and return snapshots
+  rpc ScanMarkets   (MarketScanRequest)  returns (MarketScanResponse);
+
+  // Place a new order (paper or live)
+  rpc PlaceOrder    (PlaceOrderRequest)  returns (PlaceOrderResponse);
+
+  // Close an existing order
+  rpc CloseOrder    (CloseOrderRequest)  returns (CloseOrderResponse);
+
+  // List all open positions tracked by executor
+  rpc GetPositions  (GetPositionsRequest) returns (GetPositionsResponse);
+
+  // Health check — Python calls this on startup to confirm executor is ready
+  rpc Health        (HealthRequest)      returns (HealthResponse);
+}

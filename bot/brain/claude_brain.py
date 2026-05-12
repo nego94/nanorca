@@ -1,0 +1,170 @@
+"""
+bot/brain/claude_brain.py — Claude AI decision engine.
+
+Assembles the decision prompt from live market data, calls the Anthropic API,
+parses the structured JSON response, and returns a typed decision dict.
+
+Cost management:
+  - Uses claude-haiku-4-5 for routine decisions (~$0.001 per call)
+  - Falls back to claude-sonnet-4-6 for weekly learning analysis only
+  - Tracks consecutive API failures and alerts via the circuit breaker
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+import anthropic
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+log = logging.getLogger("nanorca.brain.claude")
+
+DECISION_PROMPT_TEMPLATE = """You are the trading brain for NANORCA, an autonomous trading bot.
+
+Your job: analyze the market data below and decide whether to trade.
+
+## CURRENT MARKET DATA
+{market_data_json}
+
+## ACTIVE SIGNAL WEIGHTS (learned from past performance)
+{signal_weights_json}
+
+## RECENT PERFORMANCE CONTEXT
+- Last 24h win rate: {win_rate_24h}%
+- Last 7d win rate: {win_rate_7d}%
+- Today's P&L so far: ${daily_pnl}
+- Consecutive wins/losses: {streak}
+- Capital vs floor: ${current_capital} / ${floor_capital} ({pct_from_floor}% above floor)
+
+## PRIORITY MARKETS TO FOCUS ON
+{priority_markets}
+
+## YOUR DECISION RULES
+- Only recommend a trade if you have strong, specific reasoning
+- Confidence must reflect genuine signal strength, not optimism
+- If multiple signals conflict, lower confidence accordingly
+- Never recommend a trade size exceeding {max_position_pct}% of capital
+- Consider hold time: target 5–30 minutes for Polymarket, 1–4 hours for Hyperliquid/Binance
+
+## RESPOND IN THIS EXACT JSON FORMAT — no other text:
+{{
+  "action": "buy" | "sell" | "skip",
+  "exchange": "polymarket" | "hyperliquid" | "binance" | null,
+  "market": "<market identifier>",
+  "direction": "long" | "short" | "yes" | "no" | null,
+  "size_pct": <float 0.0–5.0, % of capital>,
+  "confidence": <integer 0–100>,
+  "signals_used": ["signal_name_1", "signal_name_2"],
+  "reasoning": "<2–3 sentence explanation of why this trade makes sense>",
+  "expected_hold_minutes": <integer>,
+  "stop_loss_pct": <float, % below entry to auto-close>
+}}"""
+
+
+class ClaudeBrain:
+    """Wraps the Anthropic API and assembles/parses trading decisions."""
+
+    def __init__(self, config, confidence_scorer) -> None:
+        self._config = config
+        self._scorer = confidence_scorer
+        self._client = anthropic.AsyncAnthropic(api_key=config.anthropic_api_key)
+        self._consecutive_failures = 0
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        reraise=True,
+    )
+    async def decide(
+        self,
+        signals: dict[str, Any],
+        signal_weights: dict[str, float],
+        performance_ctx: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Call Claude with the current market signals and get a trading decision.
+
+        Returns a parsed decision dict, or None if the API call fails.
+        Raises on JSON parse error (logs and skips — does not retry same cycle).
+        """
+        prompt = DECISION_PROMPT_TEMPLATE.format(
+            market_data_json=json.dumps(signals, indent=2),
+            signal_weights_json=json.dumps(signal_weights, indent=2),
+            win_rate_24h=performance_ctx.get("win_rate_24h", 0),
+            win_rate_7d=performance_ctx.get("win_rate_7d", 0),
+            daily_pnl=performance_ctx.get("daily_pnl", 0),
+            streak=performance_ctx.get("streak", "0"),
+            current_capital=performance_ctx.get("current_capital", self._config.starting_capital_usd),
+            floor_capital=performance_ctx.get("floor_capital", 0),
+            pct_from_floor=performance_ctx.get("pct_from_floor", 100),
+            priority_markets=", ".join(self._config.priority_markets),
+            max_position_pct=self._config.max_position_pct,
+        )
+
+        try:
+            response = await self._client.messages.create(
+                model=self._config.claude_model_fast,
+                max_tokens=self._config.claude_max_tokens,
+                temperature=self._config.claude_temperature,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            self._consecutive_failures = 0
+        except anthropic.APIError as e:
+            self._consecutive_failures += 1
+            log.error(f"Claude API error (failure #{self._consecutive_failures}): {e}")
+            raise
+
+        raw_text = response.content[0].text.strip()
+        log.debug(f"Claude raw response: {raw_text[:200]}...")
+
+        try:
+            decision = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            log.error(f"Claude returned malformed JSON: {e}\nRaw: {raw_text[:500]}")
+            return None  # Skip this cycle — do not retry
+
+        # Validate required fields
+        if "action" not in decision or "confidence" not in decision:
+            log.error(f"Claude response missing required fields: {decision}")
+            return None
+
+        log.info(
+            f"Claude decision: action={decision['action']} "
+            f"exchange={decision.get('exchange')} "
+            f"confidence={decision.get('confidence')}"
+        )
+        return decision
+
+    @retry(
+        stop=stop_after_attempt(2),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+    )
+    async def analyze_weekly(self, trades_json: str, weights_json: str) -> dict[str, Any] | None:
+        """
+        Weekly learning analysis using the deeper (more expensive) model.
+        Called by WeeklyLearner every Sunday at 00:00 UTC.
+        """
+        from learning.weekly_learner import WEEKLY_LEARNING_PROMPT
+        prompt = WEEKLY_LEARNING_PROMPT.format(
+            trades_json=trades_json,
+            current_weights_json=weights_json,
+        )
+        try:
+            response = await self._client.messages.create(
+                model=self._config.claude_model_deep,
+                max_tokens=2000,
+                temperature=0.2,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except anthropic.APIError as e:
+            log.error(f"Claude weekly analysis API error: {e}")
+            return None
+
+        raw = response.content[0].text.strip()
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            log.error(f"Claude weekly analysis malformed JSON: {e}")
+            return None

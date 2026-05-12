@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package nanorca;
+option go_package = "github.com/nanorca/executor/proto";
+option py_generic_services = false;
+
+// This file is identical to executor/proto/nanorca.proto
+// Keep both in sync. Run `make proto` to regenerate stubs.
+// See executor/proto/nanorca.proto for full documentation.
+
+message MarketSnapshot {
+  string exchange        = 1;
+  string market          = 2;
+  double price           = 3;
+  double bid             = 4;
+  double ask             = 5;
+  double volume_24h      = 6;
+  double funding_rate    = 7;
+  int64  timestamp_ms    = 8;
+  bool   available       = 9;
+}
+
+message MarketScanRequest { repeated string markets = 1; }
+message MarketScanResponse {
+  repeated MarketSnapshot snapshots = 1;
+  int64   scanned_at_ms             = 2;
+  int32   error_count               = 3;
+}
+
+enum OrderSide {
+  ORDER_SIDE_UNSPECIFIED = 0;
+  BUY   = 1;
+  SELL  = 2;
+  LONG  = 3;
+  SHORT = 4;
+}
+
+message PlaceOrderRequest {
+  string    exchange      = 1;
+  string    market        = 2;
+  OrderSide side          = 3;
+  double    size_usd      = 4;
+  double    stop_loss_pct = 5;
+  bool      paper         = 6;
+}
+message PlaceOrderResponse {
+  bool   success           = 1;
+  string exchange_order_id = 2;
+  double filled_price      = 3;
+  double filled_size_usd   = 4;
+  double slippage_pct      = 5;
+  string error             = 6;
+}
+
+message CloseOrderRequest {
+  string exchange          = 1;
+  string exchange_order_id = 2;
+  string market            = 3;
+  bool   paper             = 4;
+}
+message CloseOrderResponse {
+  bool   success    = 1;
+  double exit_price = 2;
+  double pnl_usd    = 3;
+  double fees_usd   = 4;
+  string error      = 5;
+}
+
+message OpenPosition {
+  string    exchange_order_id = 1;
+  string    exchange          = 2;
+  string    market            = 3;
+  OrderSide side              = 4;
+  double    entry_price       = 5;
+  double    current_price     = 6;
+  double    size_usd          = 7;
+  double    unrealized_pnl    = 8;
+  int64     opened_at_ms      = 9;
+}
+
+message GetPositionsRequest {}
+message GetPositionsResponse { repeated OpenPosition positions = 1; }
+
+message HealthRequest {}
+message HealthResponse {
+  bool   ok              = 1;
+  string status          = 2;
+  int64  uptime_seconds  = 3;
+  bool   binance_ok      = 4;
+  bool   polymarket_ok   = 5;
+  bool   hyperliquid_ok  = 6;
+}
+
+service ExecutorService {
+  rpc ScanMarkets  (MarketScanRequest)    returns (MarketScanResponse);
+  rpc PlaceOrder   (PlaceOrderRequest)    returns (PlaceOrderResponse);
+  rpc CloseOrder   (CloseOrderRequest)    returns (CloseOrderResponse);
+  rpc GetPositions (GetPositionsRequest)  returns (GetPositionsResponse);
+  rpc Health       (HealthRequest)        returns (HealthResponse);
+}

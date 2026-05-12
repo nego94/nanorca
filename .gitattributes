@@ -1,0 +1,17 @@
+# Normalize line endings to LF in the repo (cross-platform consistency)
+* text=auto eol=lf
+
+# Shell scripts must stay LF
+*.sh text eol=lf
+
+# Windows-specific overrides
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files — no line ending conversion
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.gz  binary
+*.zip binary
