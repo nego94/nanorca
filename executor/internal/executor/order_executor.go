@@ -65,7 +65,6 @@ func (e *OrderExecutor) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReques
 	var (
 		orderID     string
 		filledPrice float64
-		fees        float64
 		err         error
 	)
 
@@ -73,11 +72,11 @@ func (e *OrderExecutor) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReques
 
 	switch req.Exchange {
 	case "binance":
-		orderID, filledPrice, fees, err = e.binance.PlaceOrder(ctx, req.Market, side, req.SizeUsd)
+		orderID, filledPrice, _, err = e.binance.PlaceOrder(ctx, req.Market, side, req.SizeUsd)
 	case "polymarket":
-		orderID, filledPrice, fees, err = e.polym.PlaceOrder(ctx, req.Market, side, req.SizeUsd)
+		orderID, filledPrice, _, err = e.polym.PlaceOrder(ctx, req.Market, side, req.SizeUsd)
 	case "hyperliquid":
-		orderID, filledPrice, fees, err = e.hl.PlaceOrder(ctx, req.Market, side, req.SizeUsd)
+		orderID, filledPrice, _, err = e.hl.PlaceOrder(ctx, req.Market, side, req.SizeUsd)
 	default:
 		return &pb.PlaceOrderResponse{
 			Success: false,
