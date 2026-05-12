@@ -1,4 +1,4 @@
-# NANORCA — Autonomous Trading Bot
+# NANORCA — Doggo Bot
 
 > **Python AI brain. Go hot paths. Zero sleep.**
 
