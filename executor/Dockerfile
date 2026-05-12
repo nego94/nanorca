@@ -6,22 +6,17 @@ FROM golang:1.22-alpine AS builder
 
 WORKDIR /build
 
-# Install build tools (gcc for cgo, git for go mod)
+# Install build tools
 RUN apk add --no-cache gcc musl-dev git
 
-# Copy go.mod first (layer cache trick — only re-downloads if go.mod changes)
-COPY go.mod ./
+# Copy go.mod + go.sum (generated locally via 'go mod tidy') for layer caching
+COPY go.mod go.sum ./
+RUN go mod download
 
-# Download what's declared in go.mod (partial — indirect deps resolved later)
-RUN go mod download 2>/dev/null || true
-
-# Now copy ALL source code (go mod tidy needs to see imports)
+# Copy source and build
 COPY . .
-
-# Generate complete go.sum from actual source imports, then build
-RUN go mod tidy
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=mod -ldflags="-s -w" -o /app/executor ./cmd/server/
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=mod -ldflags="-s -w" -o /app/healthcheck ./cmd/healthcheck/
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/executor ./cmd/server/
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/healthcheck ./cmd/healthcheck/
 
 # Stage 2: Minimal runtime image
 FROM alpine:3.20
