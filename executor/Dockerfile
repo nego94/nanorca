@@ -9,9 +9,9 @@ WORKDIR /build
 # Install build dependencies (for cgo if needed by pgx)
 RUN apk add --no-cache gcc musl-dev
 
-# Copy go.mod and go.sum first to cache dependency download layer
-COPY go.mod go.sum ./
-RUN go mod download
+# Copy go.mod first; go.sum is generated during build (no local Go install needed)
+COPY go.mod ./
+RUN go mod tidy
 
 # Copy source
 COPY . .

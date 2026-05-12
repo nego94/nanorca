@@ -1,4 +1,4 @@
-version: "3.9"
+# NANORCA — Docker Compose (production + local)
 
 # ── NANORCA — Docker Compose ────────────────────────────────────────────────
 # Services: executor (Go), bot (Python), postgres, prometheus, grafana

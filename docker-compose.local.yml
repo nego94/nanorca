@@ -14,7 +14,7 @@
 #   alias nanorca-local='docker compose -f docker-compose.yml -f docker-compose.local.yml'
 # ══════════════════════════════════════════════════════════════════════════════
 
-version: "3.9"
+# NANORCA — Local laptop override
 
 services:
   executor:
