@@ -1,6 +1,6 @@
-// internal/exchanges/polymarket.go — Hyperliquid exchange client (hot path)
-// Hyperliquid is a decentralized perpetual DEX. Uses both REST info API and WebSocket.
-// In paper mode: simulates fills. In live mode: signs orders with private key.
+// internal/exchanges/polymarket.go — Polymarket CLOB client (Phase 2C)
+// Read-only market data requires NO auth.
+// Trading requires new Relayer API (POLYMARKET_RELAYER_API_KEY + POLYMARKET_RELAYER_KEY_ADDRESS).
 package exchanges
 
 import (
@@ -11,122 +11,152 @@ import (
 	"go.uber.org/zap"
 )
 
-// HyperliquidClient wraps the Hyperliquid REST + WebSocket APIs.
-type HyperliquidClient struct {
+// PolymarketClient wraps the Polymarket CLOB REST API.
+type PolymarketClient struct {
 	logger         *zap.Logger
 	paperMode      bool
-	restURL        string
-	wsURL          string
+	clobHost       string
+	relayerHost    string
+	relayerAPIKey  string
+	relayerKeyAddr string
 	privateKey     string
-	accountAddress string
 }
 
-// NewHyperliquidClient constructs a Hyperliquid client from env.
-func NewHyperliquidClient(logger *zap.Logger, paperMode bool) *HyperliquidClient {
-	restURL := "https://api.hyperliquid.xyz"
-	wsURL   := "wss://api.hyperliquid.xyz/ws"
-
-	if getEnv("HYPERLIQUID_TESTNET", "true") == "true" {
-		restURL = "https://api.hyperliquid-testnet.xyz"
-		wsURL   = "wss://api.hyperliquid-testnet.xyz/ws"
-	}
-
-	return &HyperliquidClient{
-		logger:         logger.Named("hyperliquid"),
+// NewPolymarketClient constructs a Polymarket client from env.
+func NewPolymarketClient(logger *zap.Logger, paperMode bool) *PolymarketClient {
+	return &PolymarketClient{
+		logger:         logger.Named("polymarket"),
 		paperMode:      paperMode,
-		restURL:        restURL,
-		wsURL:          wsURL,
-		privateKey:     getEnv("HYPERLIQUID_PRIVATE_KEY", ""),
-		accountAddress: getEnv("HYPERLIQUID_ACCOUNT_ADDRESS", ""),
+		clobHost:       "https://clob.polymarket.com",
+		relayerHost:    getEnv("POLYMARKET_HOST", "https://relayer-v2.polymarket.com"),
+		relayerAPIKey:  getEnv("POLYMARKET_RELAYER_API_KEY", ""),
+		relayerKeyAddr: getEnv("POLYMARKET_RELAYER_KEY_ADDRESS", ""),
+		privateKey:     getEnv("POLYMARKET_PRIVATE_KEY", ""),
 	}
 }
 
-// HLFundingRate holds funding data for one perpetual.
-type HLFundingRate struct {
-	Coin        string
-	FundingRate float64 // 8-hour rate (positive = longs pay shorts)
-	MarkPrice   float64
-	IndexPrice  float64
+// PolymarketMarket is a single prediction market snapshot.
+type PolymarketMarket struct {
+	ConditionID string
+	Question    string
+	YesPrice    float64 // 0.0–1.0 implied probability
+	NoPrice     float64
+	Volume24h   float64
+	Active      bool
 }
 
-// GetFundingRates returns current funding rates for all or specified coins.
-func (h *HyperliquidClient) GetFundingRates(ctx context.Context) ([]HLFundingRate, error) {
-	// TODO Phase 2: POST /info {"type": "metaAndAssetCtxs"}
-	h.logger.Debug("Hyperliquid GetFundingRates stub")
-	return nil, fmt.Errorf("not implemented (stub)")
+// Ping checks CLOB connectivity.
+func (p *PolymarketClient) Ping(ctx context.Context) error {
+	_, err := httpGet(ctx, newHTTPClient(), p.clobHost+"/markets?limit=1", nil, p.logger)
+	return err
 }
 
-// GetPrice returns the current mark price for a coin.
-func (h *HyperliquidClient) GetPrice(ctx context.Context, coin string) (float64, error) {
-	// TODO Phase 2: POST /info {"type": "allMids"}
-	h.logger.Debug("Hyperliquid GetPrice stub", zap.String("coin", coin))
-	return 0, fmt.Errorf("not implemented (stub)")
-}
-
-// PlaceOrder places a market order on Hyperliquid perpetuals.
-// side: "long" | "short". sizeUSD is the notional value.
-// In paper mode: simulates. In live mode: signs with private key (EIP-712).
-func (h *HyperliquidClient) PlaceOrder(ctx context.Context, coin, side string, sizeUSD float64) (orderID string, filledPrice float64, fees float64, err error) {
-	if h.paperMode {
-		return h.simulateOrder(coin, side, sizeUSD)
+// GetTopMarkets returns the highest-volume active prediction markets.
+// No auth required — public CLOB endpoint.
+func (p *PolymarketClient) GetTopMarkets(ctx context.Context, limit int) ([]PolymarketMarket, error) {
+	url := fmt.Sprintf("%s/markets?active=true&closed=false&limit=%d&order=volume&ascending=false", p.clobHost, limit)
+	body, err := httpGet(ctx, newHTTPClient(), url, nil, p.logger)
+	if err != nil {
+		return nil, fmt.Errorf("polymarket markets: %w", err)
 	}
-	// TODO Phase 5: POST /exchange — signed EIP-712 order
-	return "", 0, 0, fmt.Errorf("live order not implemented (stub)")
-}
 
-// CloseOrder closes (market exit) an open Hyperliquid position.
-func (h *HyperliquidClient) CloseOrder(ctx context.Context, orderID, coin string) (exitPrice, pnl, fees float64, err error) {
-	if h.paperMode {
-		return h.simulateClose(orderID, coin)
+	var resp struct {
+		Data []struct {
+			ConditionID string  `json:"condition_id"`
+			Question    string  `json:"question"`
+			Active      bool    `json:"active"`
+			Volume      float64 `json:"volume"`
+			Tokens      []struct {
+				Outcome string  `json:"outcome"`
+				Price   float64 `json:"price"`
+			} `json:"tokens"`
+		} `json:"data"`
 	}
-	// TODO Phase 5: POST /exchange — reduce-only order
-	return 0, 0, 0, fmt.Errorf("live close not implemented (stub)")
-}
-
-func (h *HyperliquidClient) simulateOrder(coin, side string, sizeUSD float64) (string, float64, float64, error) {
-	simulatedPrice := 50000.0
-	slippage       := 0.001 // 0.1% for HL perps
-	if side == "short" {
-		simulatedPrice *= (1 - slippage)
-	} else {
-		simulatedPrice *= (1 + slippage)
+	if err := unmarshal(body, &resp); err != nil {
+		return nil, err
 	}
-	fees    := sizeUSD * 0.00035 // HL maker fee is ~0.035%
-	orderID := fmt.Sprintf("PAPER_HL_%s_%d", coin, time.Now().UnixMilli())
-	h.logger.Info("[PAPER] Hyperliquid simulated order",
-		zap.String("order_id", orderID),
-		zap.String("coin", coin),
-		zap.String("side", side),
-		zap.Float64("size_usd", sizeUSD),
-		zap.Float64("simulated_price", simulatedPrice),
-	)
-	return orderID, simulatedPrice, fees, nil
+
+	markets := make([]PolymarketMarket, 0, len(resp.Data))
+	for _, m := range resp.Data {
+		pm := PolymarketMarket{
+			ConditionID: m.ConditionID,
+			Question:    m.Question,
+			Active:      m.Active,
+			Volume24h:   m.Volume,
+		}
+		for _, t := range m.Tokens {
+			if t.Outcome == "Yes" {
+				pm.YesPrice = t.Price
+			} else if t.Outcome == "No" {
+				pm.NoPrice = t.Price
+			}
+		}
+		markets = append(markets, pm)
+	}
+	p.logger.Debug("Polymarket markets fetched", zap.Int("count", len(markets)))
+	return markets, nil
 }
 
-func (h *HyperliquidClient) simulateClose(orderID, coin string) (float64, float64, float64, error) {
-	exitPrice := 51500.0
-	pnl       := 15.0
-	fees      := 0.2
-	h.logger.Info("[PAPER] Hyperliquid simulated close",
-		zap.String("order_id", orderID),
-		zap.Float64("exit_price", exitPrice),
-		zap.Float64("pnl", pnl),
-	)
-	return exitPrice, pnl, fees, nil
+// PlaceOrder places a YES/NO order. Paper mode simulates at real market price.
+func (p *PolymarketClient) PlaceOrder(ctx context.Context, conditionID, side string, sizeUSD float64) (string, float64, float64, error) {
+	if p.paperMode {
+		// Fetch the actual current price for this market
+		m, err := p.getMarketPrice(ctx, conditionID)
+		price := 0.52
+		if err == nil && m > 0 {
+			price = m
+		}
+		if side == "NO" {
+			price = 1 - price
+		}
+		price *= 1.0005 // 0.05% slippage
+		id := fmt.Sprintf("PAPER_POLY_%s_%d", conditionID[:min(8, len(conditionID))], time.Now().UnixMilli())
+		p.logger.Info("[PAPER] Polymarket order", zap.String("id", id),
+			zap.String("side", side), zap.Float64("price", price))
+		return id, price, sizeUSD * 0.002, nil
+	}
+	return "", 0, 0, fmt.Errorf("live Polymarket orders not enabled — Phase 5")
 }
 
-// Ping checks connectivity to Hyperliquid.
-func (h *HyperliquidClient) Ping(ctx context.Context) error {
-	// TODO Phase 2: POST /info {"type": "meta"}
-	h.logger.Debug("Hyperliquid ping (stub)")
-	return nil
+// CloseOrder closes a Polymarket position.
+func (p *PolymarketClient) CloseOrder(ctx context.Context, orderID, conditionID, side string) (float64, float64, float64, error) {
+	if p.paperMode {
+		price, _ := p.getMarketPrice(ctx, conditionID)
+		if price == 0 {
+			price = 0.65
+		}
+		return price, 0, 0.1, nil
+	}
+	return 0, 0, 0, fmt.Errorf("live Polymarket close not enabled")
 }
 
-// SubscribeAllMids subscribes to the WebSocket all-mids (mark prices) feed.
-// Sends price maps to ch. Blocks until ctx is cancelled.
-func (h *HyperliquidClient) SubscribeAllMids(ctx context.Context, ch chan<- map[string]float64) error {
-	// TODO Phase 2: WSS {"method": "subscribe", "subscription": {"type": "allMids"}}
-	h.logger.Info("Hyperliquid SubscribeAllMids stub")
-	<-ctx.Done()
-	return nil
+// getMarketPrice fetches the YES price for a condition ID.
+func (p *PolymarketClient) getMarketPrice(ctx context.Context, conditionID string) (float64, error) {
+	body, err := httpGet(ctx, newHTTPClient(),
+		p.clobHost+"/markets/"+conditionID, nil, p.logger)
+	if err != nil {
+		return 0, err
+	}
+	var resp struct {
+		Tokens []struct {
+			Outcome string  `json:"outcome"`
+			Price   float64 `json:"price"`
+		} `json:"tokens"`
+	}
+	if err := unmarshal(body, &resp); err != nil {
+		return 0, err
+	}
+	for _, t := range resp.Tokens {
+		if t.Outcome == "Yes" {
+			return t.Price, nil
+		}
+	}
+	return 0, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

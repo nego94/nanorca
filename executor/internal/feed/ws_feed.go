@@ -35,14 +35,25 @@ func (m *WSFeedManager) Run(ctx context.Context) {
 		}()
 		return m.binance.SubscribeBookTicker(ctx, "BTCUSDT", ch)
 	})
-	go m.runWithReconnect(ctx, "hyperliquid_all_mids", func(ctx context.Context) error {
-		ch := make(chan map[string]float64, 100)
-		go func() {
-			for range ch {
-				// TODO Phase 2: cache prices in shared map
+	go m.runWithReconnect(ctx, "hyperliquid_funding_poll", func(ctx context.Context) error {
+		// Poll funding rates every 30s (Hyperliquid WS requires complex EIP-712 auth — Phase 5)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				rates, err := m.hl.GetFundingRates(ctx)
+				if err != nil {
+					m.logger.Warn("Hyperliquid funding rate poll failed", zap.Error(err))
+					continue
+				}
+				m.logger.Debug("Hyperliquid funding rates polled", zap.Int("count", len(rates)))
+				// TODO: cache in shared price map
+				_ = rates
 			}
-		}()
-		return m.hl.SubscribeAllMids(ctx, ch)
+		}
 	})
 	<-ctx.Done()
 	m.logger.Info("WebSocket feed manager stopped")
