@@ -404,15 +404,23 @@ async def run() -> None:
     if config.paper_trading:
         try:
             real_balances = await order_router.get_balances()
-            real_total = sum(b["total_usd"] for b in real_balances if b.get("available"))
-            if real_total > 0:
-                capital_tracker.sync_from_real_balance(real_total)
+            # Use usdt (stablecoin only) — this is the actual futures margin available.
+            # total_usd includes other locked coins the bot can't use as futures collateral.
+            real_tradeable = sum(b["usdt"] for b in real_balances if b.get("available") and b["usdt"] > 0)
+            if real_tradeable > 0:
+                capital_tracker.sync_from_real_balance(real_tradeable)
                 metrics.update_capital(
                     capital_tracker.current_capital,
                     config.starting_capital_usd,
                     capital_tracker.daily_pnl,
                 )
-                log.info(f"✅ Paper capital synced: ${real_total:.2f} from real balances")
+                real_total_usd = sum(b["total_usd"] for b in real_balances if b.get("available"))
+                locked_usd = real_total_usd - real_tradeable
+                log.info(
+                    f"✅ Paper capital synced: tradeable=${real_tradeable:.2f} USDT "
+                    f"| locked=${locked_usd:.2f} (other coins) "
+                    f"| portfolio=${real_total_usd:.2f}"
+                )
             else:
                 log.info("ℹ️  No real balance available — using STARTING_CAPITAL_USD")
         except Exception as e:

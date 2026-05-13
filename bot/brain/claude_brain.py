@@ -37,10 +37,22 @@ Your job: analyze the market data below and decide whether to trade.
 - Consecutive wins/losses: {streak}
 - Capital vs floor: ${current_capital} / ${floor_capital} ({pct_from_floor}% above floor)
 
+## CAPITAL CONTEXT — READ THIS BEFORE CHOOSING A MARKET
+- Available USDT (futures margin): ~${current_capital:.2f}
+- Max position per trade: {max_position_pct}% = ~${max_position_usd:.2f} USDT margin
+- At 3x leverage: ~${max_notional_usd:.2f} notional position size
+- THIS IS FUTURES TRADING: You NEVER convert USDT to coins. USDT stays as margin.
+  Profit/loss settles back in USDT automatically when a position closes.
+- AVOID BTCUSDT: minimum lot = 0.001 BTC ≈ $100–150. Your max notional (${max_notional_usd:.2f}) is too small.
+- PREFER altcoins with small lots and high % volatility:
+  SOL, BNB, INJ, DOGE, ADA, AVAX, MATIC, LINK, DOT, OP, ARB, SUI, APT
+  These offer 1–3% moves on good signal days vs 0.3–0.5% for BTC.
+- ETH is acceptable but prefer alts when signals are equal.
+
 ## ACTIVE EXCHANGES (only trade on these)
 {enabled_exchanges}
 
-## PRIORITY MARKETS TO SCAN
+## PRIORITY MARKETS TO WATCH
 {priority_markets}
 
 ## YOUR DECISION RULES
@@ -49,13 +61,15 @@ Your job: analyze the market data below and decide whether to trade.
 - Confidence must reflect genuine signal strength, not optimism
 - If multiple signals conflict, lower confidence accordingly
 - Never recommend a trade size exceeding {max_position_pct}% of capital
-- For Binance spot: target 30-min to 4-hour hold, use momentum + volume signals
+- For Binance Futures USDT-M: target 30-min to 4-hour hold, use momentum + volume signals
+- Always pick a market from the snapshot data (_raw_snapshots) — the one with the strongest momentum signal
+- Set stop_loss_pct to 1.5–2.5% to stay within the max-hold risk budget
 
 ## RESPOND WITH ONLY RAW JSON — no markdown, no code fences, no extra text:
 {{
   "action": "buy" | "sell" | "skip",
   "exchange": "polymarket" | "hyperliquid" | "binance" | null,
-  "market": "<market identifier>",
+  "market": "<SYMBOL from _raw_snapshots, e.g. SOLUSDT or BNBUSDT>",
   "direction": "long" | "short" | "yes" | "no" | null,
   "size_pct": <float 0.0–5.0, % of capital>,
   "confidence": <integer 0–100>,
@@ -93,6 +107,11 @@ class ClaudeBrain:
         Raises on JSON parse error (logs and skips — does not retry same cycle).
         """
         enabled = sorted(getattr(self._config, "enabled_exchanges", {"binance"}))
+        current_capital = float(performance_ctx.get("current_capital", self._config.starting_capital_usd))
+        max_position_pct = self._config.max_position_pct
+        max_position_usd = current_capital * (max_position_pct / 100)
+        max_notional_usd = max_position_usd * 3  # Binance hard cap is 3x
+
         prompt = DECISION_PROMPT_TEMPLATE.format(
             market_data_json=json.dumps(signals, indent=2),
             signal_weights_json=json.dumps(signal_weights, indent=2),
@@ -100,12 +119,14 @@ class ClaudeBrain:
             win_rate_7d=performance_ctx.get("win_rate_7d", 0),
             daily_pnl=performance_ctx.get("daily_pnl", 0),
             streak=performance_ctx.get("streak", "0"),
-            current_capital=performance_ctx.get("current_capital", self._config.starting_capital_usd),
+            current_capital=current_capital,
             floor_capital=performance_ctx.get("floor_capital", 0),
             pct_from_floor=performance_ctx.get("pct_from_floor", 100),
             enabled_exchanges=", ".join(enabled),
             priority_markets=", ".join(self._config.priority_markets),
-            max_position_pct=self._config.max_position_pct,
+            max_position_pct=max_position_pct,
+            max_position_usd=max_position_usd,
+            max_notional_usd=max_notional_usd,
         )
 
         try:

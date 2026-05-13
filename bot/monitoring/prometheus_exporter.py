@@ -97,6 +97,29 @@ class PrometheusExporter:
             "nanorca_exchange_balance_total_usd",
             "Total real balance across all exchanges in USD",
         )
+
+        # Three-bucket capital breakdown
+        # tradeable = USDT/stablecoins — what bot uses as futures margin
+        # locked    = other coins in spot wallet — can't be used directly as futures collateral
+        # inflight  = capital tied up in open positions right now
+        self.capital_tradeable_usd = Gauge(
+            "nanorca_capital_tradeable_usd",
+            "Stablecoin (USDT) balance — usable as futures margin",
+            ["exchange"],
+        )
+        self.capital_locked_usd = Gauge(
+            "nanorca_capital_locked_usd",
+            "Non-stablecoin coin value — locked, not usable as futures margin directly",
+            ["exchange"],
+        )
+        self.capital_tradeable_total_usd = Gauge(
+            "nanorca_capital_tradeable_total_usd",
+            "Total tradeable USDT across all exchanges",
+        )
+        self.capital_locked_total_usd = Gauge(
+            "nanorca_capital_locked_total_usd",
+            "Total locked (non-stablecoin) value across all exchanges",
+        )
         self.trading_mode = Gauge(
             "nanorca_paper_mode",
             "1 if paper trading, 0 if live",
@@ -107,7 +130,11 @@ class PrometheusExporter:
         for ex in ("binance", "hyperliquid", "polymarket"):
             self.exchange_balance_usd.labels(exchange=ex).set(0)
             self.exchange_balance_available.labels(exchange=ex).set(0)
+            self.capital_tradeable_usd.labels(exchange=ex).set(0)
+            self.capital_locked_usd.labels(exchange=ex).set(0)
         self.exchange_balance_total_usd.set(0)
+        self.capital_tradeable_total_usd.set(0)
+        self.capital_locked_total_usd.set(0)
 
         # ── Histograms ────────────────────────────────────────────────────
         self.trade_hold_duration = Histogram(
@@ -230,16 +257,36 @@ class PrometheusExporter:
         self.claude_last_confidence.set(confidence)
 
     def update_exchange_balances(self, balances: list[dict]) -> None:
-        """Update real exchange balance metrics. Called every trading cycle."""
-        total = 0.0
+        """
+        Update real exchange balance metrics. Called every trading cycle.
+
+        Three-bucket model:
+          tradeable = usdt field (stablecoin — usable as futures margin)
+          locked    = total_usd - usdt (other coins — cannot be futures collateral directly)
+          inflight  = tracked separately via open_positions_count
+        """
+        total_portfolio = 0.0
+        total_tradeable = 0.0
+        total_locked = 0.0
         for b in balances:
             ex = b.get("exchange", "unknown")
             available = b.get("available", False)
-            usd = b.get("total_usd", 0.0) if available else 0.0
-            self.exchange_balance_usd.labels(exchange=ex).set(usd)
+            tradeable = b.get("usdt", 0.0) if available else 0.0       # stablecoin only
+            total_usd = b.get("total_usd", 0.0) if available else 0.0  # full portfolio
+            locked = max(0.0, total_usd - tradeable)                    # other coins
+
+            self.exchange_balance_usd.labels(exchange=ex).set(tradeable)
             self.exchange_balance_available.labels(exchange=ex).set(1.0 if available else 0.0)
-            total += usd
-        self.exchange_balance_total_usd.set(total)
+            self.capital_tradeable_usd.labels(exchange=ex).set(tradeable)
+            self.capital_locked_usd.labels(exchange=ex).set(locked)
+
+            total_portfolio += total_usd
+            total_tradeable += tradeable
+            total_locked += locked
+
+        self.exchange_balance_total_usd.set(total_portfolio)
+        self.capital_tradeable_total_usd.set(total_tradeable)
+        self.capital_locked_total_usd.set(total_locked)
 
     def record_scan_error(self) -> None:
         self.scan_errors_total.inc()

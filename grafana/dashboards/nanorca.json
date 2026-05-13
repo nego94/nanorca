@@ -20,15 +20,18 @@
      "fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{
        "1":{"text":"📄 PAPER","color":"blue"},"0":{"text":"🔴 LIVE","color":"red"}}}]}}},
 
-    {"id":3,"title":"Real Binance Balance","type":"stat","gridPos":{"x":8,"y":0,"w":4,"h":3},
-     "targets":[{"expr":"nanorca_exchange_balance_usd{exchange=\"binance\"}","refId":"A"}],
+    {"id":3,"title":"💵 Tradeable USDT","type":"stat","gridPos":{"x":8,"y":0,"w":4,"h":3},
+     "description":"Stablecoin balance usable as futures margin. Bot sizes all positions from this amount.",
+     "targets":[{"expr":"nanorca_capital_tradeable_usd{exchange=\"binance\"}","refId":"A"}],
      "fieldConfig":{"defaults":{"unit":"currencyUSD","color":{"mode":"thresholds"},
-       "thresholds":{"steps":[{"value":null,"color":"red"},{"value":0.01,"color":"yellow"},{"value":10,"color":"green"}]},
+       "thresholds":{"steps":[{"value":null,"color":"red"},{"value":0.01,"color":"yellow"},{"value":5,"color":"green"}]},
        "noValue":"$0.00"}}},
 
-    {"id":4,"title":"Tracked Capital","type":"stat","gridPos":{"x":12,"y":0,"w":4,"h":3},
-     "targets":[{"expr":"nanorca_capital_current_usd","refId":"A"}],
-     "fieldConfig":{"defaults":{"unit":"currencyUSD"}}},
+    {"id":4,"title":"🔒 Locked Coins","type":"stat","gridPos":{"x":12,"y":0,"w":4,"h":3},
+     "description":"Non-stablecoin coins in your wallet. Bot tracks these but cannot use them as futures margin.",
+     "targets":[{"expr":"nanorca_capital_locked_usd{exchange=\"binance\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","color":{"mode":"fixed","fixedColor":"orange"},
+       "noValue":"$0.00"}}},
 
     {"id":5,"title":"Daily P&L","type":"stat","gridPos":{"x":16,"y":0,"w":4,"h":3},
      "targets":[{"expr":"nanorca_daily_pnl_usd","refId":"A"}],
@@ -210,7 +213,31 @@
        {"refId":"C","rawSql":"SELECT ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L $\" FROM trades WHERE status='closed'","format":"table"},
        {"refId":"D","rawSql":"SELECT ROUND(AVG(hold_minutes),1) AS \"Avg Hold (min)\" FROM trades WHERE status='closed' AND hold_minutes IS NOT NULL","format":"table"}
      ],
-     "options":{"reduceOptions":{"calcs":["lastNotNull"]}}}
+     "options":{"reduceOptions":{"calcs":["lastNotNull"]}}},
+
+    {"id":700,"title":"── CAPITAL BUCKETS ──","type":"text",
+     "gridPos":{"x":0,"y":66,"w":24,"h":1},
+     "options":{"mode":"markdown","content":"## 💼 Capital Buckets — Tradeable vs Locked vs In-flight\n\n**Tradeable USDT** = stablecoin margin for futures. **Locked** = other coins, cannot use directly. **In-flight** = capital in open positions."}},
+
+    {"id":71,"title":"Capital Breakdown Over Time","type":"timeseries",
+     "gridPos":{"x":0,"y":67,"w":16,"h":7},
+     "targets":[
+       {"expr":"nanorca_capital_tradeable_usd{exchange=\"binance\"}","legendFormat":"Tradeable USDT","refId":"A"},
+       {"expr":"nanorca_capital_locked_usd{exchange=\"binance\"}","legendFormat":"Locked (other coins)","refId":"B"},
+       {"expr":"nanorca_capital_current_usd","legendFormat":"Bot Tracked Capital","refId":"C"}
+     ],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","custom":{"lineWidth":2}}}},
+
+    {"id":72,"title":"Current Buckets","type":"stat",
+     "gridPos":{"x":16,"y":67,"w":8,"h":7},
+     "description":"Three-bucket view: tradeable USDT the bot can use, locked coins it cannot, and the total portfolio value.",
+     "targets":[
+       {"expr":"nanorca_capital_tradeable_usd{exchange=\"binance\"}","legendFormat":"Tradeable USDT","refId":"A"},
+       {"expr":"nanorca_capital_locked_usd{exchange=\"binance\"}","legendFormat":"Locked Coins","refId":"B"},
+       {"expr":"nanorca_capital_tradeable_usd{exchange=\"binance\"} + nanorca_capital_locked_usd{exchange=\"binance\"}","legendFormat":"Portfolio Total","refId":"C"}
+     ],
+     "options":{"reduceOptions":{"calcs":["lastNotNull"]},"orientation":"vertical","colorMode":"background"},
+     "fieldConfig":{"defaults":{"unit":"currencyUSD"}}}
 
   ]
 }

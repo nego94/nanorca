@@ -131,32 +131,38 @@ func (b *BinanceClient) GetFundingRate(ctx context.Context, symbol string) (floa
 	return r.Rate, nil
 }
 
-// GetAccountBalance fetches real USDT balance across Spot and Funding wallets.
-// Requires API key with "Read" permission.
+// GetAccountBalance fetches Binance balances with a clean tradeable/locked split.
+//
+// USDT field    = stablecoin balance only (USDT/USDC/BUSD/FDUSD in spot wallet).
+//                 This is the ONLY money usable as futures margin. Use this for trade sizing.
+// TotalUSD field = full portfolio value (all wallets, all coins, BTC-converted).
+//                 Use this for portfolio display in Grafana.
+// Locked (display only) = TotalUSD - USDT = coins the bot cannot use as futures margin.
+//
+// Requires API key with "Read" and "Enable Futures" permissions.
 func (b *BinanceClient) GetAccountBalance(ctx context.Context) (*ExchangeBalance, error) {
 	if b.apiKey == "" {
 		return &ExchangeBalance{Exchange: "binance", Error: "BINANCE_API_KEY not set"}, nil
 	}
 
-	spotUSDT := b.spotBalanceUSDT(ctx)
-	allWalletsUSD := b.allWalletsUSD(ctx)
-	// Use the larger of the two: stablecoin spot balance vs BTC-converted total.
-	// The BTC-converted total covers all wallet types (Funding, Earn, etc.)
-	// but is an approximation. The spot stablecoin balance is exact for USDT/USDC.
-	total := allWalletsUSD
-	if spotUSDT > total {
-		total = spotUSDT
+	spotUSDT := b.spotBalanceUSDT(ctx)     // exact: USDT/USDC/BUSD/FDUSD in spot wallet
+	allWalletsUSD := b.allWalletsUSD(ctx)  // approx: total across all wallet types (BTC-converted)
+
+	// Ensure TotalUSD >= USDT (it always should be, but guard against API timing drift)
+	totalUSD := allWalletsUSD
+	if totalUSD < spotUSDT {
+		totalUSD = spotUSDT
 	}
 
 	b.logger.Info("Binance balance",
-		zap.Float64("spot_stable_usdt", spotUSDT),
-		zap.Float64("all_wallets_usd", allWalletsUSD),
-		zap.Float64("total_usd", total),
+		zap.Float64("tradeable_usdt", spotUSDT),
+		zap.Float64("total_portfolio_usd", totalUSD),
+		zap.Float64("locked_other_coins_usd", totalUSD-spotUSDT),
 	)
 	return &ExchangeBalance{
 		Exchange:  "binance",
-		USDT:      total,
-		TotalUSD:  total,
+		USDT:      spotUSDT,  // tradeable margin for futures
+		TotalUSD:  totalUSD,  // full portfolio value
 		UpdatedAt: time.Now(),
 	}, nil
 }
