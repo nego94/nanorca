@@ -133,11 +133,11 @@ func (b *BinanceClient) GetFundingRate(ctx context.Context, symbol string) (floa
 
 // GetAccountBalance fetches Binance balances with a clean tradeable/locked split.
 //
-// USDT field    = stablecoin balance only (USDT/USDC/BUSD/FDUSD in spot wallet).
-//                 This is the ONLY money usable as futures margin. Use this for trade sizing.
-// TotalUSD field = full portfolio value (all wallets, all coins, BTC-converted).
-//                 Use this for portfolio display in Grafana.
-// Locked (display only) = TotalUSD - USDT = coins the bot cannot use as futures margin.
+// USDT field    = stablecoin usable as futures margin.
+//                 Checks BOTH spot and USDT-M futures wallets — uses whichever has funds.
+//                 Users who transferred to futures will show balance here, not in spot.
+// TotalUSD field = full portfolio value (all wallets, BTC-converted).
+// Locked        = TotalUSD - USDT (other coins not usable as futures margin directly).
 //
 // Requires API key with "Read" and "Enable Futures" permissions.
 func (b *BinanceClient) GetAccountBalance(ctx context.Context) (*ExchangeBalance, error) {
@@ -145,26 +145,62 @@ func (b *BinanceClient) GetAccountBalance(ctx context.Context) (*ExchangeBalance
 		return &ExchangeBalance{Exchange: "binance", Error: "BINANCE_API_KEY not set"}, nil
 	}
 
-	spotUSDT := b.spotBalanceUSDT(ctx)     // exact: USDT/USDC/BUSD/FDUSD in spot wallet
-	allWalletsUSD := b.allWalletsUSD(ctx)  // approx: total across all wallet types (BTC-converted)
+	spotUSDT    := b.spotBalanceUSDT(ctx)    // USDT/USDC/BUSD in spot wallet
+	futuresUSDT := b.futuresWalletUSDT(ctx)  // USDT in USDT-M futures account
+	allWalletsUSD := b.allWalletsUSD(ctx)    // total portfolio (BTC-converted, all wallets)
 
-	// Ensure TotalUSD >= USDT (it always should be, but guard against API timing drift)
+	// Tradeable = wherever the USDT actually is — spot or futures
+	tradeableUSDT := spotUSDT + futuresUSDT
+
 	totalUSD := allWalletsUSD
-	if totalUSD < spotUSDT {
-		totalUSD = spotUSDT
+	if totalUSD < tradeableUSDT {
+		totalUSD = tradeableUSDT
 	}
 
 	b.logger.Info("Binance balance",
-		zap.Float64("tradeable_usdt", spotUSDT),
+		zap.Float64("spot_usdt", spotUSDT),
+		zap.Float64("futures_usdt", futuresUSDT),
+		zap.Float64("tradeable_total", tradeableUSDT),
 		zap.Float64("total_portfolio_usd", totalUSD),
-		zap.Float64("locked_other_coins_usd", totalUSD-spotUSDT),
+		zap.Float64("locked_other_coins_usd", totalUSD-tradeableUSDT),
 	)
 	return &ExchangeBalance{
 		Exchange:  "binance",
-		USDT:      spotUSDT,  // tradeable margin for futures
-		TotalUSD:  totalUSD,  // full portfolio value
+		USDT:      tradeableUSDT, // tradeable margin (spot + futures wallets combined)
+		TotalUSD:  totalUSD,      // full portfolio value
 		UpdatedAt: time.Now(),
 	}, nil
+}
+
+// futuresWalletUSDT returns the free USDT balance in the USDT-M Futures account.
+// Returns 0 without error if the account has no futures wallet or API lacks futures permission.
+func (b *BinanceClient) futuresWalletUSDT(ctx context.Context) float64 {
+	params := url.Values{}
+	params.Set("timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
+	params.Set("recvWindow", "5000")
+	params.Set("signature", b.sign(params.Encode()))
+
+	body, err := httpGet(ctx, newHTTPClient(),
+		b.futuresURL+"/fapi/v2/balance?"+params.Encode(),
+		map[string]string{"X-MBX-APIKEY": b.apiKey},
+		b.logger)
+	if err != nil {
+		b.logger.Debug("Futures wallet balance unavailable (need futures permission)", zap.Error(err))
+		return 0
+	}
+	var balances []struct {
+		Asset              string  `json:"asset"`
+		AvailableBalance   float64 `json:"availableBalance,string"`
+	}
+	if err := unmarshal(body, &balances); err != nil {
+		return 0
+	}
+	for _, b := range balances {
+		if b.Asset == "USDT" {
+			return b.AvailableBalance
+		}
+	}
+	return 0
 }
 
 // spotBalanceUSDT returns free USDT/USDC/BUSD from the Spot wallet.
