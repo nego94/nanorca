@@ -1,9 +1,11 @@
 // pkg/grpcserver/server.go — gRPC handler implementations
 // Implements the ExecutorService proto interface + gRPC HealthServer.
+// Phase 2A: Health() now pings all three exchanges in parallel for real status.
 package grpcserver
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +24,9 @@ type Server struct {
 	logger    *zap.Logger
 	scanner   *scanner.MarketScanner
 	executor  *executor_pkg.OrderExecutor
+	binance   *exchanges.BinanceClient
+	polym     *exchanges.PolymarketClient
+	hl        *exchanges.HyperliquidClient
 	paperMode bool
 	startedAt time.Time
 	healthy   atomic.Bool
@@ -40,6 +45,9 @@ func NewServer(
 		logger:    logger.Named("grpc"),
 		scanner:   mscanner,
 		executor:  executor_pkg.NewOrderExecutor(logger, binance, polym, hl, paperMode),
+		binance:   binance,
+		polym:     polym,
+		hl:        hl,
 		paperMode: paperMode,
 		startedAt: time.Now(),
 	}
@@ -69,16 +77,94 @@ func (s *Server) GetPositions(ctx context.Context, _ *pb.GetPositionsRequest) (*
 	}, nil
 }
 
-// Health returns the health status of the executor service.
+// GetBalances fetches real account balances from all three exchanges in parallel.
+func (s *Server) GetBalances(ctx context.Context, _ *pb.GetBalancesRequest) (*pb.GetBalancesResponse, error) {
+	type result struct {
+		bal *exchanges.ExchangeBalance
+	}
+	balCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	results := make(chan *exchanges.ExchangeBalance, 3)
+
+	go func() {
+		bal, err := s.binance.GetAccountBalance(balCtx)
+		if err != nil || bal == nil {
+			bal = &exchanges.ExchangeBalance{Exchange: "binance", Error: "fetch failed"}
+		}
+		results <- bal
+	}()
+	go func() {
+		bal, err := s.hl.GetAccountBalance(balCtx)
+		if err != nil || bal == nil {
+			bal = &exchanges.ExchangeBalance{Exchange: "hyperliquid", Error: "fetch failed"}
+		}
+		results <- bal
+	}()
+	go func() {
+		bal, err := s.polym.GetAccountBalance(balCtx)
+		if err != nil || bal == nil {
+			bal = &exchanges.ExchangeBalance{Exchange: "polymarket", Error: "fetch failed"}
+		}
+		results <- bal
+	}()
+
+	var pbBalances []*pb.ExchangeBalance
+	var totalUSD float64
+	for i := 0; i < 3; i++ {
+		b := <-results
+		available := b.Error == ""
+		pbBalances = append(pbBalances, &pb.ExchangeBalance{
+			Exchange:  b.Exchange,
+			Usdt:      b.USDT,
+			TotalUsd:  b.TotalUSD,
+			Available: available,
+			Error:     b.Error,
+		})
+		if available {
+			totalUSD += b.TotalUSD
+		}
+	}
+
+	return &pb.GetBalancesResponse{
+		Balances: pbBalances,
+		TotalUsd: totalUSD,
+	}, nil
+}
+
+// Health pings all three exchanges in parallel and returns real connectivity status.
 func (s *Server) Health(ctx context.Context, _ *pb.HealthRequest) (*pb.HealthResponse, error) {
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var bnOk, hlOk, polyOk bool
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); bnOk = s.binance.Ping(pingCtx) == nil }()
+	go func() { defer wg.Done(); hlOk = s.hl.Ping(pingCtx) == nil }()
+	go func() { defer wg.Done(); polyOk = s.polym.Ping(pingCtx) == nil }()
+	wg.Wait()
+
+	// Overall ok requires at least Binance reachable (primary exchange)
+	overall := s.healthy.Load() && bnOk
+
+	if !bnOk {
+		s.logger.Warn("Health check: Binance unreachable")
+	}
+	if !hlOk {
+		s.logger.Warn("Health check: Hyperliquid unreachable")
+	}
+	if !polyOk {
+		s.logger.Warn("Health check: Polymarket unreachable")
+	}
+
 	return &pb.HealthResponse{
-		Ok:            s.healthy.Load(),
+		Ok:            overall,
 		Status:        "NANORCA executor serving",
 		UptimeSeconds: int64(time.Since(s.startedAt).Seconds()),
-		// TODO Phase 2: set per-exchange status from ping results
-		BinanceOk:     true,
-		PolymarketOk:  true,
-		HyperliquidOk: true,
+		BinanceOk:     bnOk,
+		PolymarketOk:  polyOk,
+		HyperliquidOk: hlOk,
 	}, nil
 }
 

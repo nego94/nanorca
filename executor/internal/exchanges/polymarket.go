@@ -97,6 +97,25 @@ func (p *PolymarketClient) GetTopMarkets(ctx context.Context, limit int) ([]Poly
 	return markets, nil
 }
 
+// GetAccountBalance fetches the USDC balance from the Polymarket CLOB.
+// Full on-chain balance requires EIP-712 wallet signing (Phase 5).
+// Returns "not configured" if POLYMARKET_PRIVATE_KEY is unset.
+func (p *PolymarketClient) GetAccountBalance(ctx context.Context) (*ExchangeBalance, error) {
+	if p.privateKey == "" {
+		return &ExchangeBalance{
+			Exchange: "polymarket",
+			Error:    "POLYMARKET_PRIVATE_KEY not set",
+		}, nil
+	}
+	// CLOB balance endpoint requires L2 auth headers (EIP-712 signed timestamp).
+	// Full implementation is Phase 5 (live trading). For now return a placeholder
+	// so the balance panel shows the exchange is recognised but not yet wired.
+	return &ExchangeBalance{
+		Exchange: "polymarket",
+		Error:    "balance auth not yet wired (Phase 5)",
+	}, nil
+}
+
 // PlaceOrder places a YES/NO order. Paper mode simulates at real market price.
 func (p *PolymarketClient) PlaceOrder(ctx context.Context, conditionID, side string, sizeUSD float64) (string, float64, float64, error) {
 	if p.paperMode {

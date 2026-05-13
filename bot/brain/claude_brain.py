@@ -37,17 +37,21 @@ Your job: analyze the market data below and decide whether to trade.
 - Consecutive wins/losses: {streak}
 - Capital vs floor: ${current_capital} / ${floor_capital} ({pct_from_floor}% above floor)
 
-## PRIORITY MARKETS TO FOCUS ON
+## ACTIVE EXCHANGES (only trade on these)
+{enabled_exchanges}
+
+## PRIORITY MARKETS TO SCAN
 {priority_markets}
 
 ## YOUR DECISION RULES
-- Only recommend a trade if you have strong, specific reasoning
+- Only trade on ACTIVE EXCHANGES listed above — ignore signals from disabled ones (weight=0)
+- Only recommend a trade if you have strong, specific reasoning from active signals
 - Confidence must reflect genuine signal strength, not optimism
 - If multiple signals conflict, lower confidence accordingly
 - Never recommend a trade size exceeding {max_position_pct}% of capital
-- Consider hold time: target 5–30 minutes for Polymarket, 1–4 hours for Hyperliquid/Binance
+- For Binance spot: target 30-min to 4-hour hold, use momentum + volume signals
 
-## RESPOND IN THIS EXACT JSON FORMAT — no other text:
+## RESPOND WITH ONLY RAW JSON — no markdown, no code fences, no extra text:
 {{
   "action": "buy" | "sell" | "skip",
   "exchange": "polymarket" | "hyperliquid" | "binance" | null,
@@ -88,6 +92,7 @@ class ClaudeBrain:
         Returns a parsed decision dict, or None if the API call fails.
         Raises on JSON parse error (logs and skips — does not retry same cycle).
         """
+        enabled = sorted(getattr(self._config, "enabled_exchanges", {"binance"}))
         prompt = DECISION_PROMPT_TEMPLATE.format(
             market_data_json=json.dumps(signals, indent=2),
             signal_weights_json=json.dumps(signal_weights, indent=2),
@@ -98,6 +103,7 @@ class ClaudeBrain:
             current_capital=performance_ctx.get("current_capital", self._config.starting_capital_usd),
             floor_capital=performance_ctx.get("floor_capital", 0),
             pct_from_floor=performance_ctx.get("pct_from_floor", 100),
+            enabled_exchanges=", ".join(enabled),
             priority_markets=", ".join(self._config.priority_markets),
             max_position_pct=self._config.max_position_pct,
         )
@@ -117,6 +123,18 @@ class ClaudeBrain:
 
         raw_text = response.content[0].text.strip()
         log.debug(f"Claude raw response: {raw_text[:200]}...")
+
+        # Strip markdown code fences Claude sometimes adds despite instructions
+        if raw_text.startswith("```"):
+            lines = raw_text.splitlines()
+            raw_text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+
+        # Fallback: extract first JSON object if there's surrounding text
+        if not raw_text.startswith("{"):
+            start = raw_text.find("{")
+            end = raw_text.rfind("}") + 1
+            if start != -1 and end > start:
+                raw_text = raw_text[start:end]
 
         try:
             decision = json.loads(raw_text)
@@ -163,6 +181,13 @@ class ClaudeBrain:
             return None
 
         raw = response.content[0].text.strip()
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+        if not raw.startswith("{"):
+            s, e2 = raw.find("{"), raw.rfind("}") + 1
+            if s != -1 and e2 > s:
+                raw = raw[s:e2]
         try:
             return json.loads(raw)
         except json.JSONDecodeError as e:

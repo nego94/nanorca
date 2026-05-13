@@ -1,86 +1,216 @@
 {
   "__inputs": [{"name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus"}],
-  "__requires": [{"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"}],
+  "__requires":  [{"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"}],
   "title": "NANORCA Trading Dashboard",
   "uid": "nanorca-main",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 3,
   "refresh": "15s",
   "panels": [
-    {
-      "id": 1, "title": "Capital (USD)", "type": "stat",
-      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
-      "targets": [{"expr": "nanorca_capital_current_usd", "refId": "A"}],
-      "fieldConfig": {"defaults": {"unit": "currencyUSD", "color": {"mode": "thresholds"},
-        "thresholds": {"steps": [{"value": null, "color": "red"}, {"value": 80, "color": "yellow"}, {"value": 100, "color": "green"}]}}}
-    },
-    {
-      "id": 2, "title": "% Change from Start", "type": "stat",
-      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
-      "targets": [{"expr": "nanorca_capital_pct_change", "refId": "A"}],
-      "fieldConfig": {"defaults": {"unit": "percent"}}
-    },
-    {
-      "id": 3, "title": "Daily P&L", "type": "stat",
-      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
-      "targets": [{"expr": "nanorca_daily_pnl_usd", "refId": "A"}],
-      "fieldConfig": {"defaults": {"unit": "currencyUSD"}}
-    },
-    {
-      "id": 4, "title": "Bot State", "type": "stat",
-      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
-      "targets": [{"expr": "nanorca_bot_state", "refId": "A"}],
-      "fieldConfig": {"defaults": {"mappings": [
-        {"type": "value", "options": {"0": {"text": "🟢 Running"}, "1": {"text": "⏸️ Manual Pause"}, "2": {"text": "🔴 Floor Hit"}, "3": {"text": "🟡 Daily Loss"}, "4": {"text": "🟡 Circuit Break"}}}
-      ]}}
-    },
-    {
-      "id": 5, "title": "Capital Over Time", "type": "timeseries",
-      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8},
-      "targets": [{"expr": "nanorca_capital_current_usd", "legendFormat": "Capital USD", "refId": "A"}],
-      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"lineWidth": 2}}}
-    },
-    {
-      "id": 6, "title": "Win Rate 24h", "type": "gauge",
-      "gridPos": {"x": 0, "y": 12, "w": 6, "h": 6},
-      "targets": [{"expr": "nanorca_win_rate_24h * 100", "refId": "A"}],
-      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100,
-        "thresholds": {"steps": [{"value": null, "color": "red"}, {"value": 50, "color": "yellow"}, {"value": 65, "color": "green"}]}}}
-    },
-    {
-      "id": 7, "title": "Win Rate 7d", "type": "gauge",
-      "gridPos": {"x": 6, "y": 12, "w": 6, "h": 6},
-      "targets": [{"expr": "nanorca_win_rate_7d * 100", "refId": "A"}],
-      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100,
-        "thresholds": {"steps": [{"value": null, "color": "red"}, {"value": 50, "color": "yellow"}, {"value": 65, "color": "green"}]}}}
-    },
-    {
-      "id": 8, "title": "Open Positions", "type": "stat",
-      "gridPos": {"x": 12, "y": 12, "w": 6, "h": 6},
-      "targets": [{"expr": "nanorca_open_positions_count", "refId": "A"}],
-      "fieldConfig": {"defaults": {"unit": "short"}}
-    },
-    {
-      "id": 9, "title": "Last Trade Confidence", "type": "gauge",
-      "gridPos": {"x": 18, "y": 12, "w": 6, "h": 6},
-      "targets": [{"expr": "nanorca_confidence_last_trade", "refId": "A"}],
-      "fieldConfig": {"defaults": {"min": 0, "max": 100,
-        "thresholds": {"steps": [{"value": null, "color": "red"}, {"value": 65, "color": "yellow"}, {"value": 80, "color": "green"}]}}}
-    },
-    {
-      "id": 10, "title": "Trades by Exchange", "type": "timeseries",
-      "gridPos": {"x": 0, "y": 18, "w": 12, "h": 6},
-      "targets": [
-        {"expr": "increase(nanorca_trades_total[1h])", "legendFormat": "{{exchange}} trades/h", "refId": "A"}
-      ]
-    },
-    {
-      "id": 11, "title": "Scan Errors / Claude Errors", "type": "timeseries",
-      "gridPos": {"x": 12, "y": 18, "w": 12, "h": 6},
-      "targets": [
-        {"expr": "increase(nanorca_scan_errors_total[5m])", "legendFormat": "Scan errors", "refId": "A"},
-        {"expr": "increase(nanorca_claude_errors_total[5m])", "legendFormat": "Claude errors", "refId": "B"}
-      ]
-    }
+
+    {"id":1,"title":"Bot State","type":"stat","gridPos":{"x":0,"y":0,"w":4,"h":3},
+     "targets":[{"expr":"nanorca_bot_state","refId":"A"}],
+     "fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{
+       "0":{"text":"🟢 Running","color":"green"},"1":{"text":"⏸️ Paused","color":"yellow"},
+       "2":{"text":"🔴 Floor Hit","color":"red"},"3":{"text":"🟡 Daily Loss","color":"orange"},
+       "4":{"text":"🟡 Circuit","color":"orange"}}}]}}},
+
+    {"id":2,"title":"Mode","type":"stat","gridPos":{"x":4,"y":0,"w":4,"h":3},
+     "targets":[{"expr":"nanorca_paper_mode","refId":"A"}],
+     "fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{
+       "1":{"text":"📄 PAPER","color":"blue"},"0":{"text":"🔴 LIVE","color":"red"}}}]}}},
+
+    {"id":3,"title":"Real Binance Balance","type":"stat","gridPos":{"x":8,"y":0,"w":4,"h":3},
+     "targets":[{"expr":"nanorca_exchange_balance_usd{exchange=\"binance\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","color":{"mode":"thresholds"},
+       "thresholds":{"steps":[{"value":null,"color":"red"},{"value":0.01,"color":"yellow"},{"value":10,"color":"green"}]},
+       "noValue":"$0.00"}}},
+
+    {"id":4,"title":"Tracked Capital","type":"stat","gridPos":{"x":12,"y":0,"w":4,"h":3},
+     "targets":[{"expr":"nanorca_capital_current_usd","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD"}}},
+
+    {"id":5,"title":"Daily P&L","type":"stat","gridPos":{"x":16,"y":0,"w":4,"h":3},
+     "targets":[{"expr":"nanorca_daily_pnl_usd","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","color":{"mode":"thresholds"},
+       "thresholds":{"steps":[{"value":null,"color":"red"},{"value":0,"color":"yellow"},{"value":0.01,"color":"green"}]}}}},
+
+    {"id":6,"title":"Open Positions","type":"stat","gridPos":{"x":20,"y":0,"w":4,"h":3},
+     "targets":[{"expr":"nanorca_open_positions_count","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"short"}}},
+
+    {"id":100,"title":"── LIVE SIGNALS (what Claude sees right now) ──","type":"text",
+     "gridPos":{"x":0,"y":3,"w":24,"h":1},
+     "options":{"mode":"markdown","content":"## 🔍 Live Signals — What the Bot Is Watching"}},
+
+    {"id":11,"title":"📈 Binance Momentum","type":"gauge","gridPos":{"x":0,"y":4,"w":6,"h":5},
+     "description":"5-min price change across BTC/ETH/SOL. Fires at ±1.5%. -3%→0, flat→0.5, +3%→1.0",
+     "targets":[{"expr":"nanorca_signal_normalized{signal=\"binance_momentum\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"min":0,"max":1,"thresholds":{"steps":[
+       {"value":null,"color":"red"},{"value":0.35,"color":"orange"},{"value":0.45,"color":"yellow"},
+       {"value":0.55,"color":"yellow"},{"value":0.65,"color":"orange"},{"value":0.75,"color":"green"}]},
+       "mappings":[]},
+      "overrides":[]}},
+
+    {"id":12,"title":"💰 HL Funding Rate","type":"gauge","gridPos":{"x":6,"y":4,"w":6,"h":5},
+     "description":"Hyperliquid avg funding rate. 0=pay longs (go long), 0.5=neutral, 1=pay shorts (go short)",
+     "targets":[{"expr":"nanorca_signal_normalized{signal=\"funding_rate_hyperliquid\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"min":0,"max":1,"thresholds":{"steps":[
+       {"value":null,"color":"blue"},{"value":0.3,"color":"green"},{"value":0.45,"color":"yellow"},
+       {"value":0.55,"color":"yellow"},{"value":0.7,"color":"orange"},{"value":0.85,"color":"red"}]},
+       "mappings":[]}}},
+
+    {"id":13,"title":"🎯 Polymarket Gap","type":"gauge","gridPos":{"x":12,"y":4,"w":6,"h":5},
+     "description":"YES+NO price deviation from 1.0. Gap >2% = arbitrage opportunity. 0=no gap, 1=5% gap",
+     "targets":[{"expr":"nanorca_signal_normalized{signal=\"price_gap_polymarket\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"min":0,"max":1,"thresholds":{"steps":[
+       {"value":null,"color":"grey"},{"value":0.01,"color":"yellow"},{"value":0.4,"color":"green"}]},
+       "mappings":[]}}},
+
+    {"id":14,"title":"📊 Volume Spike","type":"gauge","gridPos":{"x":18,"y":4,"w":6,"h":5},
+     "description":"Cross-exchange volume vs 7-cycle EMA baseline. 0=normal, 1=2× baseline (spike)",
+     "targets":[{"expr":"nanorca_signal_normalized{signal=\"volume_spike\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"min":0,"max":1,"thresholds":{"steps":[
+       {"value":null,"color":"grey"},{"value":0.15,"color":"yellow"},{"value":0.3,"color":"green"}]},
+       "mappings":[]}}},
+
+    {"id":200,"title":"── CLAUDE DECISIONS ──","type":"text",
+     "gridPos":{"x":0,"y":9,"w":24,"h":1},
+     "options":{"mode":"markdown","content":"## 🧠 Claude AI Decisions"}},
+
+    {"id":21,"title":"Last Action","type":"stat","gridPos":{"x":0,"y":10,"w":6,"h":4},
+     "targets":[{"expr":"nanorca_claude_last_action","refId":"A"}],
+     "fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{
+       "0":{"text":"⏭️ Skip","color":"grey"},
+       "1":{"text":"🟢 Buy","color":"green"},
+       "2":{"text":"🔴 Sell","color":"red"}}}]}}},
+
+    {"id":22,"title":"Last Confidence","type":"gauge","gridPos":{"x":6,"y":10,"w":6,"h":4},
+     "targets":[{"expr":"nanorca_claude_last_confidence","refId":"A"}],
+     "fieldConfig":{"defaults":{"min":0,"max":100,"unit":"none","thresholds":{"steps":[
+       {"value":null,"color":"grey"},{"value":50,"color":"yellow"},{"value":65,"color":"green"},
+       {"value":80,"color":"blue"}]}}}},
+
+    {"id":23,"title":"Market Snapshots / Scan","type":"stat","gridPos":{"x":12,"y":10,"w":6,"h":4},
+     "targets":[{"expr":"nanorca_market_snapshots_last","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"short","color":{"mode":"thresholds"},
+       "thresholds":{"steps":[{"value":null,"color":"red"},{"value":10,"color":"yellow"},{"value":100,"color":"green"}]}}}},
+
+    {"id":24,"title":"Total Claude Cycles","type":"stat","gridPos":{"x":18,"y":10,"w":6,"h":4},
+     "targets":[{"expr":"nanorca_claude_cycles_total","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"short"}}},
+
+    {"id":300,"title":"── SIGNALS OVER TIME ──","type":"text",
+     "gridPos":{"x":0,"y":14,"w":24,"h":1},
+     "options":{"mode":"markdown","content":"## 📉 Signal History"}},
+
+    {"id":31,"title":"All Signals — 0.5=Neutral, >0.65=Action Zone","type":"timeseries",
+     "gridPos":{"x":0,"y":15,"w":24,"h":8},
+     "targets":[
+       {"expr":"nanorca_signal_normalized{signal=\"binance_momentum\"}","legendFormat":"Momentum","refId":"A"},
+       {"expr":"nanorca_signal_normalized{signal=\"funding_rate_hyperliquid\"}","legendFormat":"HL Funding","refId":"B"},
+       {"expr":"nanorca_signal_normalized{signal=\"price_gap_polymarket\"}","legendFormat":"Poly Gap","refId":"C"},
+       {"expr":"nanorca_signal_normalized{signal=\"volume_spike\"}","legendFormat":"Volume Spike","refId":"D"},
+       {"expr":"nanorca_claude_last_confidence / 100","legendFormat":"Claude Confidence (/100)","refId":"E"}
+     ],
+     "fieldConfig":{"defaults":{"min":0,"max":1,"unit":"percentunit","custom":{"lineWidth":2}}}},
+
+    {"id":400,"title":"── PERFORMANCE ──","type":"text",
+     "gridPos":{"x":0,"y":23,"w":24,"h":1},
+     "options":{"mode":"markdown","content":"## 💹 Performance"}},
+
+    {"id":41,"title":"Capital & Real Balance Over Time","type":"timeseries",
+     "gridPos":{"x":0,"y":24,"w":16,"h":7},
+     "targets":[
+       {"expr":"nanorca_capital_current_usd","legendFormat":"Tracked Capital","refId":"A"},
+       {"expr":"nanorca_exchange_balance_usd{exchange=\"binance\"}","legendFormat":"Binance (real)","refId":"B"},
+       {"expr":"nanorca_exchange_balance_total_usd","legendFormat":"All Exchanges (real)","refId":"C"},
+       {"expr":"nanorca_daily_pnl_usd","legendFormat":"Daily P&L","refId":"D"}
+     ],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","custom":{"lineWidth":2}}}},
+
+    {"id":42,"title":"Win Rates","type":"gauge","gridPos":{"x":16,"y":24,"w":8,"h":7},
+     "targets":[
+       {"expr":"nanorca_win_rate_24h * 100","legendFormat":"24h","refId":"A"},
+       {"expr":"nanorca_win_rate_7d * 100","legendFormat":"7d","refId":"B"}
+     ],
+     "fieldConfig":{"defaults":{"unit":"percent","min":0,"max":100,"thresholds":{"steps":[
+       {"value":null,"color":"red"},{"value":50,"color":"yellow"},{"value":65,"color":"green"}]}}}},
+
+    {"id":500,"title":"── EXCHANGES ──","type":"text",
+     "gridPos":{"x":0,"y":31,"w":24,"h":1},
+     "options":{"mode":"markdown","content":"## 🔗 Exchange Connectivity & Balances"}},
+
+    {"id":51,"title":"🟡 Binance","type":"stat","gridPos":{"x":0,"y":32,"w":8,"h":4},
+     "targets":[{"expr":"nanorca_exchange_balance_usd{exchange=\"binance\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","noValue":"$0.00",
+       "color":{"mode":"thresholds"},"thresholds":{"steps":[{"value":null,"color":"red"},{"value":0.01,"color":"green"}]}}}},
+
+    {"id":52,"title":"🔵 Hyperliquid","type":"stat","gridPos":{"x":8,"y":32,"w":8,"h":4},
+     "targets":[{"expr":"nanorca_exchange_balance_usd{exchange=\"hyperliquid\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","noValue":"$0.00",
+       "color":{"mode":"thresholds"},"thresholds":{"steps":[{"value":null,"color":"red"},{"value":0.01,"color":"green"}]}}}},
+
+    {"id":53,"title":"🟣 Polymarket","type":"stat","gridPos":{"x":16,"y":32,"w":8,"h":4},
+     "targets":[{"expr":"nanorca_exchange_balance_usd{exchange=\"polymarket\"}","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","noValue":"Not configured",
+       "color":{"mode":"thresholds"},"thresholds":{"steps":[{"value":null,"color":"grey"},{"value":0.01,"color":"green"}]}}}},
+
+    {"id":54,"title":"Errors","type":"timeseries","gridPos":{"x":0,"y":36,"w":24,"h":5},
+     "targets":[
+       {"expr":"increase(nanorca_scan_errors_total[5m])","legendFormat":"Scan errors","refId":"A"},
+       {"expr":"increase(nanorca_claude_errors_total[5m])","legendFormat":"Claude errors","refId":"B"},
+       {"expr":"increase(nanorca_skips_total[5m])","legendFormat":"Skips (low confidence)","refId":"C"},
+       {"expr":"increase(nanorca_trades_total[5m])","legendFormat":"Trades executed","refId":"D"}
+     ]},
+
+    {"id":600,"title":"── TRADE HISTORY (from Database) ──","type":"text",
+     "gridPos":{"x":0,"y":41,"w":24,"h":1},
+     "options":{"mode":"markdown","content":"## 📋 Trade History — Direct from PostgreSQL"}},
+
+    {"id":61,"title":"Recent Trades","type":"table",
+     "gridPos":{"x":0,"y":42,"w":24,"h":10},
+     "datasource":{"type":"postgres","uid":"nanorca-postgres"},
+     "targets":[{"refId":"A","rawSql":"SELECT\n  to_char(created_at AT TIME ZONE 'Asia/Makassar', 'YYYY-MM-DD HH24:MI') AS \"Time (WIB)\",\n  UPPER(exchange) AS \"Exchange\",\n  market AS \"Market\",\n  UPPER(direction) AS \"Dir\",\n  ROUND(entry_price, 4) AS \"Entry\",\n  ROUND(exit_price, 4) AS \"Exit\",\n  ROUND(size_usd, 2) AS \"Size $\",\n  ROUND(pnl_usd, 4) AS \"P&L $\",\n  hold_minutes AS \"Hold (min)\",\n  confidence_score AS \"Confidence\",\n  CASE WHEN win THEN '✅ Win' WHEN win IS FALSE THEN '❌ Loss' ELSE '🔄 Open' END AS \"Result\",\n  CASE WHEN paper THEN '📄 Paper' ELSE '🔴 Live' END AS \"Mode\"\nFROM trades\nORDER BY created_at DESC\nLIMIT 50","format":"table"}],
+     "fieldConfig":{"overrides":[
+       {"matcher":{"id":"byName","options":"P&L $"},"properties":[
+         {"id":"custom.displayMode","value":"color-text"},
+         {"id":"thresholds","value":{"steps":[{"value":null,"color":"red"},{"value":0,"color":"green"}]}}
+       ]},
+       {"matcher":{"id":"byName","options":"Confidence"},"properties":[
+         {"id":"custom.displayMode","value":"gradient-gauge"},
+         {"id":"min","value":0},{"id":"max","value":100}
+       ]}
+     ]}},
+
+    {"id":62,"title":"Cumulative P&L Over Time","type":"timeseries",
+     "gridPos":{"x":0,"y":52,"w":16,"h":7},
+     "datasource":{"type":"postgres","uid":"nanorca-postgres"},
+     "targets":[{"refId":"A","rawSql":"SELECT\n  closed_at AS time,\n  SUM(COALESCE(pnl_usd,0)) OVER (ORDER BY closed_at ROWS UNBOUNDED PRECEDING) AS \"Cumulative P&L\"\nFROM trades\nWHERE status = 'closed' AND closed_at IS NOT NULL\nORDER BY closed_at","format":"time_series"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","custom":{"lineWidth":2,"fillOpacity":10},"color":{"mode":"fixed","fixedColor":"green"}}}},
+
+    {"id":63,"title":"Win / Loss Count","type":"piechart",
+     "gridPos":{"x":16,"y":52,"w":8,"h":7},
+     "datasource":{"type":"postgres","uid":"nanorca-postgres"},
+     "targets":[{"refId":"A","rawSql":"SELECT\n  CASE WHEN win THEN 'Win ✅' ELSE 'Loss ❌' END AS label,\n  COUNT(*) AS count\nFROM trades\nWHERE status = 'closed' AND win IS NOT NULL\nGROUP BY win","format":"table"}],
+     "fieldConfig":{"defaults":{"color":{"mode":"palette-classic"}}}},
+
+    {"id":64,"title":"P&L by Market (all time)","type":"barchart",
+     "gridPos":{"x":0,"y":59,"w":12,"h":7},
+     "datasource":{"type":"postgres","uid":"nanorca-postgres"},
+     "targets":[{"refId":"A","rawSql":"SELECT\n  market AS \"Market\",\n  ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L\"\nFROM trades\nWHERE status = 'closed'\nGROUP BY market\nORDER BY SUM(COALESCE(pnl_usd,0)) DESC\nLIMIT 15","format":"table"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD"}}},
+
+    {"id":65,"title":"Stats (closed trades)","type":"stat",
+     "gridPos":{"x":12,"y":59,"w":12,"h":7},
+     "datasource":{"type":"postgres","uid":"nanorca-postgres"},
+     "targets":[
+       {"refId":"A","rawSql":"SELECT COUNT(*) AS \"Total Trades\" FROM trades WHERE status='closed'","format":"table"},
+       {"refId":"B","rawSql":"SELECT ROUND(AVG(CASE WHEN win THEN 1.0 ELSE 0.0 END)*100,1) AS \"Win Rate %\" FROM trades WHERE status='closed' AND win IS NOT NULL","format":"table"},
+       {"refId":"C","rawSql":"SELECT ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L $\" FROM trades WHERE status='closed'","format":"table"},
+       {"refId":"D","rawSql":"SELECT ROUND(AVG(hold_minutes),1) AS \"Avg Hold (min)\" FROM trades WHERE status='closed' AND hold_minutes IS NOT NULL","format":"table"}
+     ],
+     "options":{"reduceOptions":{"calcs":["lastNotNull"]}}}
+
   ]
 }

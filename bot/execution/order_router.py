@@ -142,6 +142,29 @@ class OrderRouter:
             log.error(f"get_positions gRPC error: {e.code()}")
             return []
 
+    async def close_position(self, exchange_order_id: str, exchange: str, market: str) -> dict:
+        """Close a single open position by order ID."""
+        if not _PROTO_AVAILABLE or self._stub is None:
+            return {"exit_price": 0.0, "pnl_usd": 0.0, "fees_usd": 0.0}
+        try:
+            req = pb2.CloseOrderRequest(
+                exchange=exchange,
+                exchange_order_id=exchange_order_id,
+                market=market,
+                paper=True,
+            )
+            resp = await self._stub.CloseOrder(req, timeout=12)
+            return {
+                "exit_price": resp.exit_price,
+                "pnl_usd": resp.pnl_usd,
+                "fees_usd": resp.fees_usd,
+                "success": resp.success,
+                "error": resp.error,
+            }
+        except Exception as e:
+            log.error(f"close_position gRPC error: {e}")
+            return {"exit_price": 0.0, "pnl_usd": 0.0, "fees_usd": 0.0, "success": False}
+
     async def close_all_positions(self) -> None:
         """Close all open positions (used by capital floor trigger)."""
         if not _PROTO_AVAILABLE or self._stub is None:
@@ -160,6 +183,31 @@ class OrderRouter:
                 log.info(f"Force-closed position {pos.exchange_order_id} on {pos.exchange}")
             except grpc.RpcError as e:
                 log.error(f"Failed to force-close {pos.exchange_order_id}: {e}")
+
+    async def get_balances(self) -> list[dict]:
+        """
+        Fetch real account balances from all exchanges via the Go executor.
+        Returns a list of dicts: {exchange, usdt, total_usd, available, error}.
+        Falls back to empty list if executor unreachable.
+        """
+        if not _PROTO_AVAILABLE or self._stub is None:
+            return []
+        try:
+            resp = await self._stub.GetBalances(pb2.GetBalancesRequest(), timeout=10)
+            balances = []
+            for b in resp.balances:
+                balances.append({
+                    "exchange":  b.exchange,
+                    "usdt":      b.usdt,
+                    "total_usd": b.total_usd,
+                    "available": b.available,
+                    "error":     b.error,
+                })
+            balances.sort(key=lambda x: x["exchange"])  # consistent display order
+            return balances
+        except grpc.RpcError as e:
+            log.error(f"get_balances gRPC error: {e.code()}")
+            return []
 
     async def health_check(self) -> bool:
         """Returns True if Go executor is healthy."""

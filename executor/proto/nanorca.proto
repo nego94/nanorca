@@ -100,6 +100,24 @@ message GetPositionsResponse {
   repeated OpenPosition positions = 1;
 }
 
+// ── Balances ──────────────────────────────────────────────────────────────────
+
+message GetBalancesRequest {}
+
+// Real-money balance snapshot from one exchange.
+message ExchangeBalance {
+  string exchange   = 1;  // "binance" | "polymarket" | "hyperliquid"
+  double usdt       = 2;  // free USDT / USDC balance
+  double total_usd  = 3;  // total account value in USD
+  bool   available  = 4;  // false if credentials missing or fetch failed
+  string error      = 5;  // non-empty when available=false
+}
+
+message GetBalancesResponse {
+  repeated ExchangeBalance balances = 1;
+  double total_usd                  = 2;  // sum across all exchanges
+}
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 message HealthRequest {}
@@ -117,17 +135,20 @@ message HealthResponse {
 
 service ExecutorService {
   // Scan all markets in parallel and return snapshots
-  rpc ScanMarkets   (MarketScanRequest)  returns (MarketScanResponse);
+  rpc ScanMarkets   (MarketScanRequest)   returns (MarketScanResponse);
 
   // Place a new order (paper or live)
-  rpc PlaceOrder    (PlaceOrderRequest)  returns (PlaceOrderResponse);
+  rpc PlaceOrder    (PlaceOrderRequest)   returns (PlaceOrderResponse);
 
   // Close an existing order
-  rpc CloseOrder    (CloseOrderRequest)  returns (CloseOrderResponse);
+  rpc CloseOrder    (CloseOrderRequest)   returns (CloseOrderResponse);
 
   // List all open positions tracked by executor
   rpc GetPositions  (GetPositionsRequest) returns (GetPositionsResponse);
 
+  // Fetch real-money balances from all exchanges in parallel
+  rpc GetBalances   (GetBalancesRequest)  returns (GetBalancesResponse);
+
   // Health check — Python calls this on startup to confirm executor is ready
-  rpc Health        (HealthRequest)      returns (HealthResponse);
+  rpc Health        (HealthRequest)       returns (HealthResponse);
 }

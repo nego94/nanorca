@@ -121,6 +121,25 @@ class CapitalTracker:
 
         return action
 
+    # ── Real balance sync ──────────────────────────────────────────────────
+
+    def sync_from_real_balance(self, real_usd: float) -> None:
+        """
+        Sync the paper trading bankroll from the real exchange balance.
+        Called on startup in paper mode so trade sizing uses actual capital.
+        Only updates if real_usd is a valid non-zero amount.
+        """
+        if real_usd <= 0:
+            return
+        old = self.current_capital
+        self.current_capital      = real_usd
+        self._day_start_capital   = real_usd
+        self._peak_capital        = max(real_usd, self._peak_capital)
+        log.info(
+            f"Capital synced from real exchange balance: "
+            f"${old:.2f} → ${real_usd:.2f}"
+        )
+
     # ── Trade result updates ───────────────────────────────────────────────
 
     async def update_from_trade(self, trade_result: dict) -> None:

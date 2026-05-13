@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -51,7 +52,13 @@ func main() {
 
 	// ── Market scanner ────────────────────────────────────────────────────────
 	priorityMarkets := splitCSV(getEnv("PRIORITY_MARKETS", "BTC,ETH,SOL"))
-	mscanner := scanner.NewMarketScanner(logger, binanceClient, polymarketClient, hyperliquidClient, priorityMarkets)
+	binanceScanTopN := 0
+	if v := getEnv("BINANCE_SCAN_TOP_N", "0"); v != "0" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			binanceScanTopN = n
+		}
+	}
+	mscanner := scanner.NewMarketScanner(logger, binanceClient, polymarketClient, hyperliquidClient, priorityMarkets, binanceScanTopN, feedManager.Cache)
 
 	// ── gRPC server ───────────────────────────────────────────────────────────
 	lis, err := net.Listen("tcp", ":"+grpcPort)

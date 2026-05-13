@@ -81,6 +81,19 @@ message OpenPosition {
 message GetPositionsRequest {}
 message GetPositionsResponse { repeated OpenPosition positions = 1; }
 
+message GetBalancesRequest {}
+message ExchangeBalance {
+  string exchange   = 1;
+  double usdt       = 2;
+  double total_usd  = 3;
+  bool   available  = 4;
+  string error      = 5;
+}
+message GetBalancesResponse {
+  repeated ExchangeBalance balances = 1;
+  double total_usd                  = 2;
+}
+
 message HealthRequest {}
 message HealthResponse {
   bool   ok              = 1;
@@ -96,5 +109,6 @@ service ExecutorService {
   rpc PlaceOrder   (PlaceOrderRequest)    returns (PlaceOrderResponse);
   rpc CloseOrder   (CloseOrderRequest)    returns (CloseOrderResponse);
   rpc GetPositions (GetPositionsRequest)  returns (GetPositionsResponse);
+  rpc GetBalances  (GetBalancesRequest)   returns (GetBalancesResponse);
   rpc Health       (HealthRequest)        returns (HealthResponse);
 }

@@ -168,10 +168,13 @@ def format_plan_summary(mode: TradingMode, capital: float) -> str:
             f"   Claude sizes each trade from confidence score\n"
             f"   Max exposure: {p['max_exposure_pct']}% capital | No leverage"
         )
-    pos = p['position_usd']
+    margin = capital * (p['risk_pct'] / 100)   # actual capital at risk per trade
+    notional = p['position_usd']               # leveraged position size
+    lev = p['leverage']
+    lev_str = f" (@{lev:.0f}x → ${notional:.2f} notional)" if lev > 1 else ""
     return (
         f"📐 Plan: {p['mode_name']}\n"
-        f"   Risk/trade: {p['risk_pct']:.1f}% → ${pos:.2f} notional\n"
-        f"   Leverage: {p['leverage']:.1f}x | Daily goal: {p['daily_goal_pct']:.1f}%\n"
+        f"   Risk/trade: {p['risk_pct']:.1f}% = ${margin:.2f} margin{lev_str}\n"
+        f"   Leverage: {lev:.1f}x | Daily goal: {p['daily_goal_pct']:.1f}%\n"
         f"   Max exposure: {p['max_exposure_pct']:.0f}% capital"
     )

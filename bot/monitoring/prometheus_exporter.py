@@ -78,9 +78,36 @@ class PrometheusExporter:
             "Bot state: 0=running,1=paused_manual,2=paused_floor,3=paused_daily,4=paused_circuit"
         )
 
-        # Exchange-specific gauges
+        # Per-exchange P&L gauges
         for exchange in ("binance", "polymarket", "hyperliquid"):
             Gauge(f"nanorca_{exchange}_pnl_usd", f"Cumulative P&L for {exchange}")
+
+        # Real exchange balances — updated every cycle via GetBalances gRPC call
+        self.exchange_balance_usd = Gauge(
+            "nanorca_exchange_balance_usd",
+            "Real account balance per exchange in USD",
+            ["exchange"],
+        )
+        self.exchange_balance_available = Gauge(
+            "nanorca_exchange_balance_available",
+            "1 if exchange balance was fetched successfully, 0 if error",
+            ["exchange"],
+        )
+        self.exchange_balance_total_usd = Gauge(
+            "nanorca_exchange_balance_total_usd",
+            "Total real balance across all exchanges in USD",
+        )
+        self.trading_mode = Gauge(
+            "nanorca_paper_mode",
+            "1 if paper trading, 0 if live",
+        )
+        self.trading_mode.set(1 if config.paper_trading else 0)
+
+        # Seed per-exchange labels so they appear from startup (even before first fetch)
+        for ex in ("binance", "hyperliquid", "polymarket"):
+            self.exchange_balance_usd.labels(exchange=ex).set(0)
+            self.exchange_balance_available.labels(exchange=ex).set(0)
+        self.exchange_balance_total_usd.set(0)
 
         # ── Histograms ────────────────────────────────────────────────────
         self.trade_hold_duration = Histogram(
@@ -98,6 +125,45 @@ class PrometheusExporter:
             "Distribution of confidence scores",
             buckets=list(range(0, 110, 10)),
         )
+
+        # ── Signal metrics (live — updated every cycle) ───────────────────
+        self.signal_normalized = Gauge(
+            "nanorca_signal_normalized",
+            "Normalized signal value 0.0–1.0 (0.5=neutral)",
+            ["signal"],
+        )
+        self.signal_fired = Gauge(
+            "nanorca_signal_fired",
+            "1 if signal exceeded its fire threshold this cycle, 0 otherwise",
+            ["signal"],
+        )
+        self.market_snapshots_last = Gauge(
+            "nanorca_market_snapshots_last",
+            "Number of market snapshots returned in the last scan",
+        )
+
+        # ── Claude decision metrics ────────────────────────────────────────
+        self.claude_last_action = Gauge(
+            "nanorca_claude_last_action",
+            "Last Claude action: 0=skip, 1=buy, 2=sell",
+        )
+        self.claude_last_confidence = Gauge(
+            "nanorca_claude_last_confidence",
+            "Confidence score of Claude's last decision (0–100)",
+        )
+        self.claude_cycles_total = Counter(
+            "nanorca_claude_cycles_total",
+            "Total number of Claude decision cycles",
+        )
+
+        # Seed signal labels so they appear from startup
+        for sig in ("binance_momentum", "funding_rate_hyperliquid",
+                    "price_gap_polymarket", "volume_spike"):
+            self.signal_normalized.labels(signal=sig).set(0.5)
+            self.signal_fired.labels(signal=sig).set(0)
+        self.market_snapshots_last.set(0)
+        self.claude_last_action.set(0)
+        self.claude_last_confidence.set(0)
 
         # ── Seed starting capital gauge ───────────────────────────────────
         self.capital_starting_usd.set(config.starting_capital_usd)
@@ -147,6 +213,33 @@ class PrometheusExporter:
             "paused_consecutive": 4,
         }
         self.bot_state.set(state_map.get(state_value, 0))
+
+    def update_signals(self, signals: dict, snapshot_count: int) -> None:
+        """Update live signal metrics. Called every trading cycle."""
+        self.market_snapshots_last.set(snapshot_count)
+        for key in ("binance_momentum", "funding_rate_hyperliquid",
+                    "price_gap_polymarket", "volume_spike"):
+            s = signals.get(key, {})
+            self.signal_normalized.labels(signal=key).set(s.get("normalized", 0.5))
+            self.signal_fired.labels(signal=key).set(1 if s.get("fired") else 0)
+
+    def update_claude_decision(self, action: str, confidence: int) -> None:
+        """Update Claude decision metrics after each cycle."""
+        self.claude_cycles_total.inc()
+        self.claude_last_action.set({"skip": 0, "buy": 1, "sell": 2}.get(action, 0))
+        self.claude_last_confidence.set(confidence)
+
+    def update_exchange_balances(self, balances: list[dict]) -> None:
+        """Update real exchange balance metrics. Called every trading cycle."""
+        total = 0.0
+        for b in balances:
+            ex = b.get("exchange", "unknown")
+            available = b.get("available", False)
+            usd = b.get("total_usd", 0.0) if available else 0.0
+            self.exchange_balance_usd.labels(exchange=ex).set(usd)
+            self.exchange_balance_available.labels(exchange=ex).set(1.0 if available else 0.0)
+            total += usd
+        self.exchange_balance_total_usd.set(total)
 
     def record_scan_error(self) -> None:
         self.scan_errors_total.inc()

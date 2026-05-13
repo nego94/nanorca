@@ -13,6 +13,12 @@ Starts the full bot system:
 Architecture: asyncio throughout. The main trading cycle runs every
 SCAN_INTERVAL_SECONDS via APScheduler. Exchange I/O goes through the
 Go executor service via gRPC. All decisions go through the Claude brain.
+
+Pre-filter thresholds (before Claude is called — saves 60-70% API cost on quiet days):
+  _PREFILTER_MOMENTUM_PCT  : price moved >X% in rolling window → call Claude
+  _PREFILTER_VOLUME_RATIO  : volume >X× baseline → call Claude
+  _PREFILTER_FUNDING_RATE  : funding rate |X| → call Claude
+  _MIN_GROSS_MOVE_PCT      : minimum expected price move to cover fees (0.04% round-trip + 0.05% profit target)
 """
 from __future__ import annotations
 
@@ -46,6 +52,128 @@ logging.basicConfig(
 )
 log = logging.getLogger("nanorca.main")
 
+# Stop-loss and max hold time applied to every open position each cycle.
+_DEFAULT_STOP_LOSS_PCT = 2.0       # close if position is down 2%
+_MAX_HOLD_MINUTES      = 240       # close if held more than 4 hours
+
+# ── Pre-filter thresholds (before Claude API call) ────────────────────────────
+# At least ONE must trigger; otherwise the market is too quiet to call Claude.
+_PREFILTER_MOMENTUM_PCT = 0.30    # price moved >0.30% in rolling window
+_PREFILTER_VOLUME_RATIO = 1.20    # current volume >1.20× EMA baseline
+_PREFILTER_FUNDING_RATE = 0.0001  # funding rate |x| > 0.01%
+_PREFILTER_POLY_GAP     = 0.01    # Polymarket YES+NO gap > 1%
+
+# Minimum gross price move to cover maker fees + target profit.
+# Futures maker: 0.02% per side × 2 = 0.04% round-trip. Profit target: 0.05%.
+# Total minimum: 0.09%. Below this, the trade loses money after fees.
+_MIN_GROSS_MOVE_PCT = 0.09
+
+# Graduated confidence hard skip — below this, never trade regardless of signals.
+_CONFIDENCE_HARD_SKIP = 55
+
+
+def _prefilter_should_skip(signals: dict) -> tuple[bool, str]:
+    """
+    Returns (should_skip, reason).
+    At least one raw signal must cross its pre-filter threshold before calling Claude.
+    This saves 60-70% of Claude API cost on quiet market days.
+    """
+    momentum_pct = abs(signals.get("binance_momentum", {}).get("raw_value", 0.0))
+    if momentum_pct >= _PREFILTER_MOMENTUM_PCT:
+        return False, f"binance_momentum={momentum_pct:.3f}%"
+
+    volume_ratio = signals.get("volume_spike", {}).get("raw_value", 0.0)
+    if volume_ratio >= _PREFILTER_VOLUME_RATIO:
+        return False, f"volume_spike={volume_ratio:.2f}×"
+
+    funding_raw = abs(signals.get("funding_rate_hyperliquid", {}).get("raw_value", 0.0))
+    if funding_raw >= _PREFILTER_FUNDING_RATE:
+        return False, f"funding_rate={funding_raw:.6f}"
+
+    poly_gap = signals.get("price_gap_polymarket", {}).get("raw_value", 0.0)
+    if poly_gap >= _PREFILTER_POLY_GAP:
+        return False, f"poly_gap={poly_gap:.3f}"
+
+    return True, "all signals below pre-filter thresholds (market quiet)"
+
+
+async def _manage_open_positions(
+    order_router, outcome_logger, capital_tracker, telegram, metrics,
+    market_snapshots: list,
+) -> None:
+    """
+    Check every open position each cycle.
+    Closes automatically on stop-loss hit or max hold time exceeded.
+    """
+    import time as _time
+
+    positions = await order_router.get_positions()
+    if not positions:
+        metrics.open_positions_count.set(0)
+        return
+
+    metrics.open_positions_count.set(len(positions))
+
+    # Build a quick price lookup from the snapshots we just fetched
+    price_map: dict[str, float] = {
+        s["market"]: s["price"]
+        for s in market_snapshots
+        if s.get("price", 0) > 0
+    }
+
+    now_ms = int(_time.time() * 1000)
+
+    for pos in positions:
+        order_id = pos["exchange_order_id"]
+        market   = pos["market"]
+        exchange = pos["exchange"]
+        entry    = pos.get("entry_price", 0)
+        side     = pos.get("side", "BUY").upper()
+        opened   = pos.get("opened_at_ms", now_ms)
+
+        current_price = price_map.get(market, 0)
+        if current_price <= 0 or entry <= 0:
+            continue
+
+        # P&L % from entry (positive = winning)
+        if side in ("BUY", "LONG"):
+            pnl_pct = (current_price - entry) / entry * 100
+        else:
+            pnl_pct = (entry - current_price) / entry * 100
+
+        hold_min = (now_ms - opened) / 60_000
+        stop_hit = pnl_pct <= -_DEFAULT_STOP_LOSS_PCT
+        time_out = hold_min >= _MAX_HOLD_MINUTES
+
+        if not (stop_hit or time_out):
+            continue
+
+        reason = "stop-loss" if stop_hit else f"max-hold ({hold_min:.0f}m)"
+        log.info(f"Auto-closing {market} {side}: {reason} | pnl={pnl_pct:+.2f}%")
+
+        try:
+            close = await order_router.close_position(order_id, exchange, market)
+            exit_price = close.get("exit_price", current_price)
+            pnl_usd    = close.get("pnl_usd", 0.0)
+            fees_usd   = close.get("fees_usd", 0.0)
+
+            await outcome_logger.log_trade_closed(order_id, exit_price, pnl_usd, fees_usd)
+            await capital_tracker.update_from_trade({
+                "pnl_usd": pnl_usd,
+                "fees_usd": fees_usd,
+            })
+
+            emoji = "✅" if pnl_usd >= 0 else "❌"
+            await telegram.send_info(
+                f"{emoji} [PAPER] Position closed — {reason}\n"
+                f"{exchange.upper()} {market}\n"
+                f"Entry: ${entry:.4f} → Exit: ${exit_price:.4f}\n"
+                f"P&L: ${pnl_usd:+.4f} | Hold: {hold_min:.0f}m"
+            )
+            metrics.record_trade_closed(exchange, pnl_usd >= 0, pnl_usd, hold_min)
+        except Exception as e:
+            log.error(f"Auto-close failed for {order_id}: {e}")
+
 
 async def main_loop(
     db: Database,
@@ -68,6 +196,7 @@ async def main_loop(
       2. Capital dropped > CAPITAL_FLOOR_PCT?    → alert + pause forever
       3. Daily loss > MAX_DAILY_LOSS_PCT?        → pause until midnight
       4. Scan all markets via Go executor
+     4b. Auto-close open positions (stop-loss / max hold time)
       5. Build signal dict
       6. Send to Claude → get confidence + decision JSON
       7. confidence < CONFIDENCE_THRESHOLD?      → log skip
@@ -108,13 +237,20 @@ async def main_loop(
         await telegram.send_warning(f"⚠️ Drawdown rule: {drawdown_action} — trading halted for today")
         return
 
-    # ── Step 4: Scan markets via Go executor ──────────────────────────────
+    # ── Step 4: Scan markets + fetch real balances via Go executor ────────
     try:
         market_snapshots = await order_router.scan_markets(config.priority_markets)
     except Exception as e:
         log.error(f"Market scan failed: {e}")
         metrics.record_scan_error()
         return
+
+    # Update real exchange balance metrics for Grafana (non-fatal)
+    try:
+        balances = await order_router.get_balances()
+        metrics.update_exchange_balances(balances)
+    except Exception as e:
+        log.debug(f"Balance fetch skipped: {e}")
 
     if not market_snapshots:
         log.warning("No market snapshots returned — skipping cycle")
@@ -128,6 +264,36 @@ async def main_loop(
         log.error(f"Signal build failed: {e}")
         return
 
+    # ── Step 4b: Auto-close open positions (stop-loss + max hold time) ────
+    await _manage_open_positions(
+        order_router, outcome_logger, capital_tracker, telegram, metrics,
+        market_snapshots,
+    )
+
+    # Push live signal values to Prometheus so Grafana shows what's happening
+    metrics.update_signals(signals, len(market_snapshots))
+
+    # ── Step 5b: Pre-filter — skip Claude if market is too quiet ──────────
+    # Saves 60-70% of Claude API cost. At least one signal must cross its threshold.
+    should_skip, prefilter_reason = _prefilter_should_skip(signals)
+    if should_skip:
+        log.info(f"Pre-filter: market quiet — {prefilter_reason} — skipping Claude call")
+        metrics.record_skip()
+        return
+    log.debug(f"Pre-filter passed: {prefilter_reason}")
+
+    # ── Step 5c: Minimum gross move check (fee break-even gate) ──────────
+    # Futures maker fee: 0.04% round-trip. Profit target: 0.05%. Total needed: 0.09%.
+    # If best momentum across all markets is below this, no trade can be profitable.
+    momentum_pct = abs(signals.get("binance_momentum", {}).get("raw_value", 0.0))
+    if momentum_pct < _MIN_GROSS_MOVE_PCT:
+        log.info(
+            f"MIN_GROSS_MOVE: momentum={momentum_pct:.3f}% < {_MIN_GROSS_MOVE_PCT}% "
+            f"— trade can't cover fees, skip"
+        )
+        metrics.record_skip()
+        return
+
     # ── Step 6: Ask Claude for a decision ─────────────────────────────────
     try:
         performance_ctx = await db.get_performance_context()
@@ -137,15 +303,18 @@ async def main_loop(
         metrics.record_claude_error()
         return
 
-    # ── Step 7: Confidence check ──────────────────────────────────────────
+    # ── Step 7: Confidence check (graduated: <55 hard skip) ──────────────
     if decision is None or decision.get("action") == "skip":
-        log.info(f"Claude skipped — confidence={decision.get('confidence', 0) if decision else 'N/A'}")
+        confidence = decision.get("confidence", 0) if decision else 0
+        log.info(f"Claude skipped — confidence={confidence}")
+        metrics.update_claude_decision("skip", confidence)
         metrics.record_skip()
         return
 
     confidence = decision.get("confidence", 0)
-    if confidence < config.confidence_threshold:
-        log.info(f"Confidence {confidence} below threshold {config.confidence_threshold} — skip")
+    if confidence < _CONFIDENCE_HARD_SKIP:
+        log.info(f"Confidence {confidence} < {_CONFIDENCE_HARD_SKIP} (hard skip) — skip")
+        metrics.update_claude_decision("skip", confidence)
         metrics.record_skip()
         return
 
@@ -169,6 +338,7 @@ async def main_loop(
         await telegram.send_warning(f"⚠️ Order execution failed: {e}")
         return
 
+    metrics.update_claude_decision(decision.get("action", "buy"), confidence)
     # ── Step 10: Log outcome and update metrics ────────────────────────────
     await outcome_logger.log_trade_opened(decision, trade_result)
     await capital_tracker.update_from_trade(trade_result)
@@ -228,12 +398,33 @@ async def run() -> None:
     await order_router.connect()
     log.info(f"✅ Go executor connected at {config.executor_grpc_addr}")
 
+    # ── In paper mode: sync starting capital from real exchange balance ─────
+    # This ensures trade sizing is based on what you actually have,
+    # not the static STARTING_CAPITAL_USD config value.
+    if config.paper_trading:
+        try:
+            real_balances = await order_router.get_balances()
+            real_total = sum(b["total_usd"] for b in real_balances if b.get("available"))
+            if real_total > 0:
+                capital_tracker.sync_from_real_balance(real_total)
+                metrics.update_capital(
+                    capital_tracker.current_capital,
+                    config.starting_capital_usd,
+                    capital_tracker.daily_pnl,
+                )
+                log.info(f"✅ Paper capital synced: ${real_total:.2f} from real balances")
+            else:
+                log.info("ℹ️  No real balance available — using STARTING_CAPITAL_USD")
+        except Exception as e:
+            log.warning(f"Balance sync skipped: {e} — using STARTING_CAPITAL_USD")
+
     # ── Announce readiness ─────────────────────────────────────────────────
     await telegram.send_info(
         f"🟢 NANORCA online\n"
         f"Mode: {'📄 PAPER' if config.paper_trading else '🔴 LIVE'}\n"
-        f"Capital: ${config.starting_capital_usd}\n"
-        f"Markets: {', '.join(config.priority_markets)}\n"
+        f"Capital: ${capital_tracker.current_capital:.2f}\n"
+        f"Exchanges: {', '.join(sorted(config.enabled_exchanges))}\n"
+        f"Binance scan: top-{getattr(config, 'binance_scan_top_n', 3)} USDT pairs\n"
         f"Scan interval: {config.scan_interval_seconds}s"
     )
 

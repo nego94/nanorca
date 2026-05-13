@@ -55,6 +55,17 @@ class Config:
     # ── Telegram ───────────────────────────────────────────────────────────
     telegram_bot_token: str     = field(default_factory=lambda: _require("TELEGRAM_BOT_TOKEN"))
     telegram_chat_id: str       = field(default_factory=lambda: _require("TELEGRAM_CHAT_ID"))
+    # Comma-separated Telegram user IDs allowed to use the bot.
+    # The owner (TELEGRAM_CHAT_ID) is always included automatically.
+    # Get any user's ID by having them message @userinfobot.
+    # Example: "123456789,987654321"
+    telegram_allowed_user_ids: frozenset = field(
+        default_factory=lambda: frozenset(
+            uid.strip()
+            for uid in _get("TELEGRAM_ALLOWED_USER_IDS", "").split(",")
+            if uid.strip()
+        )
+    )
 
     # ── CallMeBot ──────────────────────────────────────────────────────────
     callmebot_phone: str        = field(default_factory=lambda: _get("CALLMEBOT_PHONE", ""))
@@ -87,6 +98,22 @@ class Config:
     log_level: str              = field(default_factory=lambda: _get("LOG_LEVEL", "INFO"))
     # Trading plan: nanorca_decide | conservative | aggressive | hybrid
     trading_mode: str           = field(default_factory=lambda: _get("TRADING_MODE", "nanorca_decide"))
+
+    # ── Strategy thresholds ────────────────────────────────────────────────
+    # Minimum gross price move to cover futures maker fees + profit target.
+    # Futures maker: 0.02%/side × 2 = 0.04% round-trip. Target: 0.05%. Total: 0.09%.
+    min_gross_move_pct: float   = field(default_factory=lambda: _get_float("MIN_GROSS_MOVE_PCT", 0.09))
+
+    # ── Exchange focus ─────────────────────────────────────────────────────
+    # Comma-separated exchanges whose signals Claude acts on.
+    # Unlisted exchanges are still scanned for data but signals are zeroed out.
+    enabled_exchanges: frozenset = field(
+        default_factory=lambda: frozenset(
+            ex.strip().lower()
+            for ex in _get("ENABLED_EXCHANGES", "binance").split(",")
+            if ex.strip()
+        )
+    )
 
     # ── News APIs ──────────────────────────────────────────────────────────
     cmc_api_key: str            = field(default_factory=lambda: _get("CMC_API_KEY", ""))

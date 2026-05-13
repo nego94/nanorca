@@ -47,6 +47,7 @@ class TelegramBot:
             ("learning",     self._cmd_learning),
             ("setfloor",     self._cmd_setfloor),
             ("setthreshold", self._cmd_setthreshold),
+            ("setmode",      self._cmd_setmode),
             ("stop",         self._cmd_stop_exchange),
             ("help",         self._cmd_help),
         ]
@@ -64,51 +65,90 @@ class TelegramBot:
             await self._app.stop()
             await self._app.shutdown()
 
-    # ── Guard: only owner can use commands ────────────────────────────────
+    # ── Authorization ─────────────────────────────────────────────────────
+
+    def _user_id(self, update: Update) -> str:
+        return str(update.effective_user.id) if update.effective_user else ""
 
     def _is_owner(self, update: Update) -> bool:
-        """Allow commands from the configured chat (DM or group) sent by owner."""
-        chat_id = str(update.effective_chat.id)
-        user_id = str(update.effective_user.id) if update.effective_user else ""
-        cfg_id  = str(self._config.telegram_chat_id)
-        # Accept if chat matches (DM) OR if the user is the bot owner (group chat)
-        return chat_id == cfg_id or user_id == cfg_id
+        """Owner = TELEGRAM_CHAT_ID. Can run control commands (pause, resume, setfloor)."""
+        uid = self._user_id(update)
+        return uid == str(self._config.telegram_chat_id)
+
+    def _is_authorized(self, update: Update) -> bool:
+        """
+        Authorized = owner OR any user listed in TELEGRAM_ALLOWED_USER_IDS.
+        Authorized users can run read-only commands (status, capital, markets, etc.).
+        """
+        uid = self._user_id(update)
+        if uid == str(self._config.telegram_chat_id):
+            return True
+        return uid in self._config.telegram_allowed_user_ids
 
     async def _deny(self, update: Update) -> None:
         await update.message.reply_text("⛔ Unauthorized.")
 
+    async def _deny_owner_only(self, update: Update) -> None:
+        await update.message.reply_text("⛔ This command is owner-only.")
+
     # ── Commands ──────────────────────────────────────────────────────────
 
     async def _cmd_status(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
         from risk.circuit_breaker import BotState
         from risk.trading_plan import TradingMode, format_plan_summary
-        state_emoji = {"running": "🟢", "paused_daily_loss": "🟡", "paused_consecutive": "🟡",
-                       "paused_floor_hit": "🔴", "paused_manual": "⏸️"}
+
+        state_emoji = {
+            "running": "🟢", "paused_daily_loss": "🟡", "paused_consecutive": "🟡",
+            "paused_floor_hit": "🔴", "paused_manual": "⏸️",
+        }
         s = self._cb.state
         mode = TradingMode(getattr(self._config, 'trading_mode', 'nanorca_decide'))
         plan_line = format_plan_summary(mode, self._cap.current_capital)
+
+        # Fetch real exchange balances from Go executor
+        balances = await self._router.get_balances()
+        bal_lines = []
+        real_total = 0.0
+        ex_icons = {"binance": "🟡", "hyperliquid": "🔵", "polymarket": "🟣"}
+        for b in balances:
+            icon = ex_icons.get(b["exchange"], "⚪")
+            if b["available"]:
+                bal_lines.append(f"  {icon} {b['exchange'].capitalize()}: ${b['total_usd']:.2f}")
+                real_total += b["total_usd"]
+            else:
+                note = b["error"] or "unavailable"
+                bal_lines.append(f"  {icon} {b['exchange'].capitalize()}: — ({note})")
+
+        bal_section = (
+            f"*💰 Real Balances*\n" + "\n".join(bal_lines) +
+            f"\n  ━━━ Total: *${real_total:.2f}*"
+        ) if bal_lines else "  _(executor not connected)_"
+
         msg = (
             f"*NANORCA Status*\n"
             f"State: {state_emoji.get(s.value, '❓')} `{s.value}`\n"
-            f"Mode: {'📄 PAPER' if self._config.paper_trading else '🔴 LIVE'}\n"
-            f"Capital: ${self._cap.current_capital:.2f} "
-            f"({self._cap.pct_from_start:+.1f}%)\n"
-            f"Daily P&L: ${self._cap.daily_pnl:+.2f} "
+            f"Mode:  {'📄 PAPER' if self._config.paper_trading else '🔴 LIVE'}\n\n"
+            f"{bal_section}\n\n"
+            f"*📊 Bot Tracker*\n"
+            f"Capital:    ${self._cap.current_capital:.2f} ({self._cap.pct_from_start:+.1f}%)\n"
+            f"Daily P&L:  ${self._cap.daily_pnl:+.2f} "
             f"(drawdown: {self._cap.daily_drawdown_pct:.2f}%)\n"
-            f"Floor: ${self._cap.floor_capital:.2f} "
-            f"({self._cap.pct_from_floor:.1f}% above floor)\n\n"
+            f"Floor:      ${self._cap.floor_capital:.2f} "
+            f"({self._cap.pct_from_floor:.1f}% above)\n\n"
             f"{plan_line}"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def _cmd_pause(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
+        if not self._is_owner(update): await self._deny_owner_only(update); return
         await self._cb.pause_manual()
         await update.message.reply_text("⏸️ Trading paused. Send /resume to restart.")
 
     async def _cmd_resume(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
+        if not self._is_owner(update): await self._deny_owner_only(update); return
         resumed = await self._cb.resume()
         if resumed:
             await update.message.reply_text("▶️ Trading resumed.")
@@ -116,7 +156,7 @@ class TelegramBot:
             await update.message.reply_text("ℹ️ Bot is already running.")
 
     async def _cmd_report(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
         args = ctx.args or []
         period = "7d" if args and args[0] == "7d" else "24h"
         from datetime import datetime, timezone, timedelta
@@ -135,18 +175,43 @@ class TelegramBot:
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def _cmd_capital(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
+
+        balances = await self._router.get_balances()
+        ex_icons = {"binance": "🟡", "hyperliquid": "🔵", "polymarket": "🟣"}
+        real_total = 0.0
+        bal_lines = []
+        for b in balances:
+            icon = ex_icons.get(b["exchange"], "⚪")
+            name = b["exchange"].capitalize()
+            if b["available"]:
+                bal_lines.append(
+                    f"  {icon} {name}\n"
+                    f"     USDT free: ${b['usdt']:.4f}\n"
+                    f"     Total USD: ${b['total_usd']:.4f}"
+                )
+                real_total += b["total_usd"]
+            else:
+                bal_lines.append(f"  {icon} {name}: — ({b['error'] or 'unavailable'})")
+
+        exchange_section = "\n".join(bal_lines) if bal_lines else "  _(executor not connected)_"
+
         msg = (
-            f"💰 *Capital Overview*\n"
-            f"Starting: ${self._config.starting_capital_usd:.2f}\n"
-            f"Current:  ${self._cap.current_capital:.2f} ({self._cap.pct_from_start:+.1f}%)\n"
-            f"Floor:    ${self._cap.floor_capital:.2f} ({self._config.capital_floor_pct}%)\n"
-            f"Above floor: {self._cap.pct_from_floor:.1f}%"
+            f"💰 *Capital Overview*\n\n"
+            f"*Exchange Balances (real)*\n"
+            f"{exchange_section}\n"
+            f"  ━━━━━━━━━━━━━━━━\n"
+            f"  Total on-chain: *${real_total:.2f}*\n\n"
+            f"*Bot Tracker*\n"
+            f"  Starting: ${self._config.starting_capital_usd:.2f}\n"
+            f"  Current:  ${self._cap.current_capital:.2f} ({self._cap.pct_from_start:+.1f}%)\n"
+            f"  Floor:    ${self._cap.floor_capital:.2f} ({self._config.capital_floor_pct}% of start)\n"
+            f"  Above floor: {self._cap.pct_from_floor:.1f}%"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def _cmd_positions(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
         try:
             positions = await self._router.get_positions()
             if not positions:
@@ -167,7 +232,7 @@ class TelegramBot:
 
     async def _cmd_markets(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         """Show live market prices fetched from Go executor."""
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
         try:
             snapshots = await self._router.scan_markets(["BTC", "ETH", "SOL"])
             if not snapshots:
@@ -190,7 +255,7 @@ class TelegramBot:
             await update.message.reply_text(f"❌ Market scan error: {e}")
 
     async def _cmd_history(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
         n = int(ctx.args[0]) if ctx.args else 10
         n = min(n, 50)  # cap at 50
         trades = await self._db.get_recent_trades(limit=n)
@@ -206,7 +271,7 @@ class TelegramBot:
         )
 
     async def _cmd_learning(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
         report = await self._db.get_last_learning_report()
         weights = await self._db.get_signal_weights()
         wstr = "\n".join(f"  • {k}: {v:.2f}" for k, v in weights.items())
@@ -224,7 +289,8 @@ class TelegramBot:
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def _cmd_setfloor(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
+        if not self._is_owner(update): await self._deny_owner_only(update); return
         if not ctx.args:
             await update.message.reply_text("Usage: /setfloor <pct>  e.g. /setfloor 20"); return
         try:
@@ -240,14 +306,53 @@ class TelegramBot:
         )
 
     async def _cmd_setthreshold(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
+        if not self._is_owner(update): await self._deny_owner_only(update); return
         await update.message.reply_text(
             "⚠️ Dynamic threshold update requires Phase 4. "
             "Update CONFIDENCE_THRESHOLD in .env and restart."
         )
 
+    async def _cmd_setmode(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        if not self._is_authorized(update): await self._deny(update); return
+        if not self._is_owner(update): await self._deny_owner_only(update); return
+        from risk.trading_plan import TradingMode, get_plan_params
+        valid = ["nanorca_decide", "conservative", "aggressive", "hybrid"]
+        current = getattr(self._config, 'trading_mode', 'nanorca_decide')
+        if not ctx.args or ctx.args[0] not in valid:
+            lines = []
+            for m in valid:
+                mode = TradingMode(m)
+                p = get_plan_params(mode, self._cap.current_capital)
+                marker = " ← current" if m == current else ""
+                if m == "nanorca_decide":
+                    lines.append(f"  `{m}` — Claude sizes freely{marker}")
+                else:
+                    lines.append(
+                        f"  `{m}` — {p['risk_pct']:.0f}% risk, "
+                        f"{p['leverage']:.0f}x lev, {p['daily_goal_pct']:.1f}% goal/day{marker}"
+                    )
+            await update.message.reply_text(
+                f"*Trading Modes*\n" + "\n".join(lines) +
+                f"\n\nTo switch:\n"
+                f"1\\. Edit `TRADING_MODE=<mode>` in `.env`\n"
+                f"2\\. Run `docker compose restart bot`\n\n"
+                f"Usage: `/setmode hybrid`",
+                parse_mode="MarkdownV2"
+            )
+            return
+        new_mode = ctx.args[0]
+        await update.message.reply_text(
+            f"✅ *To switch to `{new_mode}`:*\n\n"
+            f"1\\. Edit `.env` → `TRADING_MODE={new_mode}`\n"
+            f"2\\. `docker compose restart bot`\n\n"
+            f"Current mode: `{current}`",
+            parse_mode="MarkdownV2"
+        )
+
     async def _cmd_stop_exchange(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
+        if not self._is_owner(update): await self._deny_owner_only(update); return
         exchange = ctx.args[0].lower() if ctx.args else ""
         if exchange not in ("binance", "polymarket", "hyperliquid", "all"):
             await update.message.reply_text("Usage: /stop binance|polymarket|hyperliquid"); return
@@ -258,22 +363,24 @@ class TelegramBot:
         )
 
     async def _cmd_help(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._is_owner(update): await self._deny(update); return
+        if not self._is_authorized(update): await self._deny(update); return
         msg = (
-            "🤖 *NANORCA Commands*\n"
-            "/status — Current state & capital\n"
+            "🤖 *NANORCA Commands*\n\n"
+            "*Read-only (all members):*\n"
+            "/status — State, real balances, plan\n"
+            "/capital — Per-exchange balance detail\n"
+            "/markets — Live prices from all exchanges\n"
+            "/positions — Open paper/live trades\n"
+            "/report [7d] — Trade P&L breakdown\n"
+            "/history [n] — Last N trades\n"
+            "/learning — Weekly AI analysis & signal weights\n"
+            "/help — This message\n\n"
+            "*Owner only:*\n"
             "/pause — Stop all trading\n"
             "/resume — Restart trading\n"
-            "/report [7d] — Trade breakdown\n"
-            "/capital — Money overview\n"
-            "/positions — Open trades\n"
-            "/markets — Live prices from all exchanges\n"
-            "/history [n] — Last N trades\n"
-            "/learning — Weekly AI analysis\n"
-            "/setfloor <pct> — Change floor %\n"
-            "/setthreshold <n> — Change confidence\n"
-            "/stop binance|polymarket|hyperliquid\n"
-            "/help — This message"
+            "/setmode — View/switch trading plan\n"
+            "/setfloor <pct> — Change capital floor %\n"
+            "/stop binance|polymarket|hyperliquid — Disable one exchange"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 

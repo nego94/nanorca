@@ -77,6 +77,32 @@ func httpGet(ctx context.Context, client *http.Client, rawURL string, headers ma
 	return nil, fmt.Errorf("GET %s failed after retries: %w", rawURL, err)
 }
 
+// httpPostForm performs a POST where all parameters are already encoded in the URL query string.
+// Used for Binance Futures signed endpoints (params + signature in URL, no request body).
+func httpPostForm(ctx context.Context, client *http.Client, rawURL string, headers map[string]string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: %.300s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
 // httpPost performs a POST with JSON body.
 func httpPost(ctx context.Context, client *http.Client, rawURL string, jsonBody []byte, headers map[string]string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytesReader(jsonBody))

@@ -55,6 +55,22 @@ class RiskManager:
         self._cap = capital_tracker
         self._trading_mode = TradingMode(getattr(config, "trading_mode", "nanorca_decide"))
 
+    @staticmethod
+    def _graduated_size_pct(confidence: int) -> float:
+        """
+        Maps confidence tier to max position size % (strategy doc Part 6).
+        55-64 → 1% (tiny: real learning data at low confidence)
+        65-79 → 3% (normal)
+        80-89 → 5% (full)
+        90+   → 5% (max; high_conviction flag set separately)
+        Below 55 is blocked upstream in main.py before reaching here.
+        """
+        if confidence >= 80:
+            return 5.0
+        if confidence >= 65:
+            return 3.0
+        return 1.0  # 55-64 band: tiny position for calibration data
+
     async def approve(
         self,
         decision: dict[str, Any],
@@ -62,12 +78,14 @@ class RiskManager:
     ) -> tuple[bool, str]:
         """
         Validate and size the trade.
-        Injects size_usd, leverage, and plan_mode back into decision dict.
+        Injects size_usd, leverage, plan_mode, and high_conviction back into decision dict.
         Returns (approved: bool, reason: str).
         """
         confidence = decision.get("confidence", 0)
-        if confidence < self._config.confidence_threshold:
-            return False, f"Confidence {confidence} < threshold {self._config.confidence_threshold}"
+
+        # Safety net — main.py should already block below 55
+        if confidence < 55:
+            return False, f"Confidence {confidence} < 55 (hard skip)"
 
         action = decision.get("action")
         if action not in ("buy", "sell"):
@@ -80,12 +98,18 @@ class RiskManager:
         capital = capital_tracker.current_capital
         plan = get_plan_params(self._trading_mode, capital)
 
+        # ── High conviction flag (90+ confidence) ────────────────────────
+        if confidence >= 90:
+            decision["high_conviction"] = True
+
         # ── Size calculation ──────────────────────────────────────────────
         if self._trading_mode == TradingMode.NANORCA_DECIDE:
-            # Claude's size_pct drives size; no leverage in auto mode
+            # Graduated sizing by confidence tier — overrides Claude's suggestion
+            tier_max_pct = self._graduated_size_pct(confidence)
             size_pct = min(
-                float(decision.get("size_pct", self._config.max_position_pct)),
-                self._config.max_position_pct,
+                float(decision.get("size_pct", tier_max_pct)),
+                tier_max_pct,                          # graduated tier cap
+                self._config.max_position_pct,         # config hard cap
             )
             lev = effective_leverage(exchange, 1.0)
             size_usd = capital * (size_pct / 100)
