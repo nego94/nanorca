@@ -119,6 +119,29 @@ class OrderRouter:
         except grpc.RpcError as e:
             raise RuntimeError(f"PlaceOrder gRPC error: {e.code()} — {e.details()}") from e
 
+    async def get_positions(self) -> list[dict]:
+        """Fetch all open positions from the Go executor."""
+        if not _PROTO_AVAILABLE or self._stub is None:
+            return []
+        try:
+            resp = await self._stub.GetPositions(pb2.GetPositionsRequest(), timeout=10)
+            return [
+                {
+                    "exchange_order_id": p.exchange_order_id,
+                    "exchange":   p.exchange,
+                    "market":     p.market,
+                    "side":       p.side,
+                    "entry_price":    p.entry_price,
+                    "current_price":  p.current_price,
+                    "size_usd":       p.size_usd,
+                    "unrealized_pnl": p.unrealized_pnl,
+                }
+                for p in resp.positions
+            ]
+        except grpc.RpcError as e:
+            log.error(f"get_positions gRPC error: {e.code()}")
+            return []
+
     async def close_all_positions(self) -> None:
         """Close all open positions (used by capital floor trigger)."""
         if not _PROTO_AVAILABLE or self._stub is None:

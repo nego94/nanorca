@@ -42,6 +42,7 @@ class TelegramBot:
             ("report",       self._cmd_report),
             ("capital",      self._cmd_capital),
             ("positions",    self._cmd_positions),
+            ("markets",      self._cmd_markets),
             ("history",      self._cmd_history),
             ("learning",     self._cmd_learning),
             ("setfloor",     self._cmd_setfloor),
@@ -66,7 +67,12 @@ class TelegramBot:
     # ── Guard: only owner can use commands ────────────────────────────────
 
     def _is_owner(self, update: Update) -> bool:
-        return str(update.effective_chat.id) == str(self._config.telegram_chat_id)
+        """Allow commands from the configured chat (DM or group) sent by owner."""
+        chat_id = str(update.effective_chat.id)
+        user_id = str(update.effective_user.id) if update.effective_user else ""
+        cfg_id  = str(self._config.telegram_chat_id)
+        # Accept if chat matches (DM) OR if the user is the bot owner (group chat)
+        return chat_id == cfg_id or user_id == cfg_id
 
     async def _deny(self, update: Update) -> None:
         await update.message.reply_text("⛔ Unauthorized.")
@@ -141,8 +147,47 @@ class TelegramBot:
 
     async def _cmd_positions(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_owner(update): await self._deny(update); return
-        # TODO Phase 3: fetch real open positions from order_router
-        await update.message.reply_text("📋 No open positions (stub — Phase 3)")
+        try:
+            positions = await self._router.get_positions()
+            if not positions:
+                await update.message.reply_text("📋 No open positions right now.")
+                return
+            lines = []
+            for p in positions:
+                lines.append(
+                    f"{'🟢' if p.get('side') in ('BUY','LONG') else '🔴'} "
+                    f"{p.get('exchange','?').upper()} {p.get('market','?')} "
+                    f"${p.get('size_usd',0):.2f} "
+                    f"entry@{p.get('entry_price',0):.4f}"
+                )
+            await update.message.reply_text("📋 *Open positions:*\n" + "\n".join(lines),
+                                            parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Could not fetch positions: {e}")
+
+    async def _cmd_markets(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show live market prices fetched from Go executor."""
+        if not self._is_owner(update): await self._deny(update); return
+        try:
+            snapshots = await self._router.scan_markets(["BTC", "ETH", "SOL"])
+            if not snapshots:
+                await update.message.reply_text("📡 No market data yet — executor may still be warming up.")
+                return
+            lines = []
+            for s in snapshots:
+                ex = s.get("exchange", "?")
+                market = s.get("market", "?")
+                price = s.get("price", 0)
+                fr = s.get("funding_rate", 0)
+                avail = "✅" if s.get("available") else "❌"
+                fr_str = f" fr:{fr*100:.4f}%" if fr else ""
+                lines.append(f"{avail} {ex.upper()} {market}: ${price:,.2f}{fr_str}")
+            await update.message.reply_text(
+                "📊 *Live Market Prices:*\n" + "\n".join(lines),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Market scan error: {e}")
 
     async def _cmd_history(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_owner(update): await self._deny(update); return
@@ -222,6 +267,7 @@ class TelegramBot:
             "/report [7d] — Trade breakdown\n"
             "/capital — Money overview\n"
             "/positions — Open trades\n"
+            "/markets — Live prices from all exchanges\n"
             "/history [n] — Last N trades\n"
             "/learning — Weekly AI analysis\n"
             "/setfloor <pct> — Change floor %\n"
