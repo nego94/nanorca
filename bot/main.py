@@ -483,6 +483,12 @@ async def run() -> None:
     await order_router.connect()
     log.info(f"✅ Go executor connected at {config.executor_grpc_addr}")
 
+    # ── Recover open trades from DB (survives restarts) ───────────────────
+    # Any open trade > 4h old is auto-expired. Recent ones are reloaded into
+    # outcome_logger so they can still be closed correctly this session.
+    await outcome_logger.recover_from_db(max_hold_minutes=_MAX_HOLD_MINUTES)
+    log.info("✅ Open trade recovery complete")
+
     # ── In paper mode: sync starting capital from real exchange balance ─────
     # This ensures trade sizing is based on what you actually have,
     # not the static STARTING_CAPITAL_USD config value.

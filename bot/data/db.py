@@ -70,16 +70,45 @@ class Database:
             INSERT INTO trades (
                 exchange, market, direction, entry_price, size_usd,
                 confidence_score, signal_mix, claude_reasoning, status,
-                opened_at, paper
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',NOW(),$9)
+                opened_at, paper, exchange_order_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',NOW(),$9,$10)
             RETURNING id
             """,
             trade["exchange"], trade["market"], trade["direction"],
             trade.get("entry_price"), trade.get("size_usd"),
             trade.get("confidence_score"), json.dumps(trade.get("signal_mix", {})),
             trade.get("claude_reasoning"), trade.get("paper", True),
+            trade.get("exchange_order_id", ""),
         )
         return row["id"]
+
+    async def get_open_trades(self) -> list[dict]:
+        """Return all open trades for restart recovery."""
+        rows = await self._fetch(
+            """
+            SELECT id, exchange_order_id, exchange, market, entry_price, opened_at, paper
+            FROM trades WHERE status = 'open' ORDER BY opened_at
+            """
+        )
+        return [dict(r) for r in rows]
+
+    async def expire_trade(self, trade_id: int) -> None:
+        """Close a trade with 0 P&L — used when position is lost on restart."""
+        await self._execute(
+            """
+            UPDATE trades SET
+                status = 'closed',
+                pnl_usd = 0,
+                fees_usd = 0,
+                outcome = 'breakeven',
+                win = false,
+                closed_at = NOW(),
+                hold_minutes = EXTRACT(EPOCH FROM (NOW() - opened_at)) / 60,
+                claude_reasoning = COALESCE(claude_reasoning, '') || ' [AUTO-CLOSED: position lost on bot restart]'
+            WHERE id = $1
+            """,
+            trade_id,
+        )
 
     async def close_trade(self, trade_id: int, exit_price: float, pnl: float, fees: float) -> None:
         """Update a trade record as closed."""
