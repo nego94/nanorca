@@ -415,7 +415,40 @@ Every Sunday during weekly learning:
 
 ---
 
-## 14. VPS Setup (When Ready)
+## 14. VPS Operations — Deploy & Update
+
+### ⚠️ CRITICAL: How to Deploy Code Changes
+
+**Both `bot` and `executor` use `build:` in docker-compose.yml — code is baked into the Docker image, NOT volume-mounted.**
+
+This means:
+- `docker compose restart bot` → restarts the SAME OLD image — code changes NOT picked up
+- `docker compose up -d --build bot` → rebuilds image with new code, then restarts ✅
+
+**After every `git pull`, always use `--build`:**
+
+```bash
+# Standard update flow (after any code change):
+cd /root/nanorca
+git pull origin main
+docker compose up -d --build bot        # rebuild + restart bot only
+
+# If executor changed too (Go code):
+docker compose up -d --build executor   # rebuild + restart executor
+
+# If both changed:
+docker compose up -d --build bot executor
+
+# Run DB migrations if new .sql files added:
+docker compose exec -T postgres psql -U nanorca_user -d nanorca < migrations/002_add_indexes.sql
+```
+
+**Signs you forgot `--build` and are running old code:**
+- `/status` shows wrong format or wrong capital ($10.00 instead of restored value)
+- Fixes you pushed aren't working despite being in git
+- Telegram messages don't match what's in the code
+
+### VPS Setup (First Time)
 
 **Recommended:** dihostingin.com Ryzen-1 (2GB RAM, 40GB NVMe, Ryzen 9 7950x3D)
 OR Hetzner ARM64 Frankfurt ($3.50/mo)
