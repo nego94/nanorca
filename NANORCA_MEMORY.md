@@ -506,15 +506,46 @@ command: >
 
 ---
 
-## 17. Current Status & Next Actions
+## 17. Current Status & Roadmap
 
-**Bot status as of 2026-05-14:** Running on VPS with all fixes deployed. Paper trading active.
+**Bot status as of 2026-05-14:** Running on VPS. Paper trading active. Bugs being fixed.
 
-1. **Monitor for first paper trade** — bot will broadcast `📋 PLANNED`, `✅ FILLED`, then `🎉/❌/⏰` on close
-2. **Check Grafana trade history** — will populate once first trade closes (PLANNED→FILLED→CLOSED lifecycle)
-3. **Run `/report` daily** to watch win rate and P&L accumulate
-4. **Check Sunday 2026-05-18 00:00 UTC** — first weekly learning report fires
-5. **After 14+ days of profitable paper trading** → flip `PAPER_TRADING=false` on VPS and restart
+### Confirmed Feature Decisions
+- ✅ Grid trading — OUR bot does it (not Binance built-in), AI-activated, separate from momentum
+- ✅ Claude news analysis — replace placeholder CMC scraper with Claude Haiku reading headlines
+- ❌ Gemini news — skipped (use Claude instead)
+- ❌ Binance AI Signal — skipped (premium API required, not accessible)
+- ❌ Next.js dashboard — skipped (Grafana is sufficient for now)
+
+### Bug Fixes Needed (Phase A — do first)
+
+| # | Bug | Root Cause | Status |
+|---|---|---|---|
+| 1 | Capital shows 0 after paper trade | `refresh_from_real()` in `/status` resets paper P&L to real balance | 🔧 In progress |
+| 2 | Paper P&L overwritten on every /status | Same — real balance sync conflicts with paper simulation | 🔧 In progress |
+| 3 | /report shows 0 closed, doesn't split paper/live | No paper filter in query, close not logged properly | 🔧 In progress |
+| 4 | /suggestion says coin not found (OSMO, PEPE, 1000PEPE) | Spot-only coins have no futures; 1000PEPE naming; normalisation bug | 🔧 In progress |
+| 5 | Grafana shows no paper trade history | Trades save to DB but Grafana panel may need paper=true filter + time range fix | 🔧 In progress |
+
+### Next Phase: Grid Trading (Phase B)
+- Spot grid: Claude activates when coin is ranging, sets price range + levels via ATR
+- Futures grid: same but uses long/short positions, earns funding rate
+- Max 5 spot grids + 5 futures grids simultaneously
+- Paper grid emulation: separate from real grids, own DB tables
+- Telegram commands: /grid list, /grid stop SYMBOL
+- DB tables: grid_sessions, grid_orders (separate from trades table)
+- Capital allocation: separate budget from momentum trading
+
+### Next Phase: Claude News Analysis (Phase C)
+- Claude Haiku reads last 24h CMC/crypto headlines each cycle
+- Returns sentiment (-1 to +1) + affected coins
+- Feeds into trading decision as additional signal (weight ~0.10)
+- Cost: minimal (Haiku is cheap, runs once per cycle not per coin)
+
+### Monitoring
+1. **Run `/report` daily** to watch win rate and P&L accumulate
+2. **Check Sunday 2026-05-18 00:00 UTC** — first weekly learning report fires
+3. **After 14+ days profitable paper trading** → flip `PAPER_TRADING=false`
 4. **Watch first paper trade** fire on Telegram (market needs to move > 0.30%)
 5. **Check Sunday learning report** — first auto-run 2026-05-18 00:00 UTC
 6. **Monitor daily** via `/report` on Telegram

@@ -138,20 +138,11 @@ class TelegramBot:
                 note = b.get("error") or "unavailable"
                 bal_lines.append(f"  {icon} {b['exchange'].capitalize()}: — ({note})")
 
-        # Refresh Bot Tracker from live Binance balance so /status is always accurate.
-        # Prefer USDT free (futures margin available). If that's near 0 (e.g. the
-        # futures wallet returns 0 due to an API quirk), fall back to total_usd.
-        # Only sync if we get a meaningful value (>$1) to avoid dust artifacts.
-        binance_bal = next(
-            (b for b in balances if b.get("exchange") == "binance" and b.get("available")),
-            None,
-        )
-        if binance_bal:
-            sync_usd = binance_bal.get("usdt", 0)
-            if sync_usd < 1.0:
-                sync_usd = binance_bal.get("total_usd", 0)
-            if sync_usd > 1.0:
-                self._cap.refresh_from_real(sync_usd)
+        # Do NOT sync capital tracker here in paper mode.
+        # Paper mode: Bot Tracker = simulated capital that grows/shrinks with paper P&L.
+        # Syncing from real balance on every /status call would wipe accumulated paper gains.
+        # Real balance is shown in the "Real Balances" section above — that's enough.
+        # Live mode: safe to sync since the real balance IS the capital.
 
         bal_section = (
             f"*💰 Real Balances*\n" + "\n".join(bal_lines) +
@@ -195,16 +186,32 @@ class TelegramBot:
         from datetime import datetime, timezone, timedelta
         since = datetime.now(timezone.utc) - (timedelta(days=7) if period == "7d" else timedelta(hours=24))
         trades = await self._db.get_trades_in_range(since)
-        closed = [t for t in trades if t.get("status") == "closed"]
-        wins = sum(1 for t in closed if t.get("win"))
-        pnl = sum(t.get("pnl_usd", 0) or 0 for t in closed)
-        wr = round(wins / len(closed) * 100, 1) if closed else 0
-        msg = (
-            f"📊 *Report — last {period}*\n"
-            f"Trades: {len(trades)} | Closed: {len(closed)}\n"
-            f"Win rate: {wr}% ({wins}W / {len(closed)-wins}L)\n"
-            f"P&L: ${pnl:+.2f}"
-        )
+
+        def _section(label: str, rows: list) -> str:
+            closed = [t for t in rows if t.get("status") == "closed"]
+            open_  = [t for t in rows if t.get("status") == "open"]
+            wins   = sum(1 for t in closed if t.get("win"))
+            losses = len(closed) - wins
+            pnl    = sum(t.get("pnl_usd", 0) or 0 for t in closed)
+            wr     = round(wins / len(closed) * 100, 1) if closed else 0
+            return (
+                f"*{label}*\n"
+                f"Total: {len(rows)} | Open: {len(open_)} | Closed: {len(closed)}\n"
+                f"Win rate: `{wr}%` ({wins}W / {losses}L)\n"
+                f"P&L: `${pnl:+.4f}`"
+            )
+
+        paper_trades = [t for t in trades if t.get("paper")]
+        live_trades  = [t for t in trades if not t.get("paper")]
+
+        msg = f"📊 *Report — last {period}*\n━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += _section("📄 Paper Trading", paper_trades)
+        if live_trades:
+            msg += f"\n\n{'━' * 21}\n"
+            msg += _section("🔴 Live Trading", live_trades)
+        else:
+            msg += "\n\n_No live trades in this period._"
+
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     async def _cmd_capital(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -430,12 +437,46 @@ class TelegramBot:
             await update.message.reply_text("❌ Claude brain not available.")
             return
 
+        # Futures symbol aliases — some coins have different names on Binance Futures vs spot
+        _FUTURES_ALIASES = {
+            "PEPE":    "1000PEPE",
+            "SHIB":    "1000SHIB",
+            "LUNC":    "1000LUNC",
+            "FLOKI":   "1000FLOKI",
+            "BONK":    "1000BONK",
+            "RATS":    "1000RATS",
+            "SATS":    "1000SATS",
+        }
+        # Coins that exist on Binance spot but have NO futures contract
+        _SPOT_ONLY = {
+            "OSMO", "ATOM", "KAVA", "CELO", "BAND", "ALPHA", "HARD",
+            "SXP", "DOCK", "DREP", "FIO", "IDEX", "LIT", "MDX",
+        }
+
         raw_symbol = ctx.args[0].upper().strip().lstrip("$")
         for suffix in ("USDT", "BUSD", "USDC", "/USDT", "-USDT"):
             if raw_symbol.endswith(suffix):
                 raw_symbol = raw_symbol[:-len(suffix)]
                 break
-        symbol = raw_symbol  # base only e.g. "PEPE"
+
+        # Check spot-only first
+        if raw_symbol in _SPOT_ONLY:
+            await update.message.reply_text(
+                f"⚠️ `{raw_symbol}` exists on Binance *spot* but has no futures contract.\n\n"
+                f"NANORCA trades futures only (lower fees, no conversion needed).\n"
+                f"`{raw_symbol}` cannot be traded or analysed by this bot.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        # Apply futures alias if needed (e.g. PEPE → 1000PEPE)
+        futures_symbol = _FUTURES_ALIASES.get(raw_symbol, raw_symbol)
+        if futures_symbol != raw_symbol:
+            await update.message.reply_text(
+                f"ℹ️ `{raw_symbol}` is called `{futures_symbol}` on Binance Futures — scanning as `{futures_symbol}USDT`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        symbol = futures_symbol
 
         await update.message.reply_text(f"🔍 Scanning `{symbol}USDT` — 2-pass analysis, takes ~5s...", parse_mode=ParseMode.MARKDOWN)
 
@@ -452,9 +493,11 @@ class TelegramBot:
 
         if not coin_snap or coin_snap.get("price", 0) == 0:
             await update.message.reply_text(
-                f"❌ No data for `{symbol}USDT`.\n\n"
-                f"This coin may not exist on Binance Futures, or the symbol is wrong.\n"
-                f"Try: `/check {symbol}` first to add it to the scan list, then wait a few cycles.",
+                f"❌ No futures data for `{symbol}USDT`.\n\n"
+                f"Possible reasons:\n"
+                f"• No futures contract exists for this coin\n"
+                f"• Symbol spelling is wrong (try with 1000 prefix e.g. `1000PEPE`)\n"
+                f"• Scan timed out — try again in 30s",
                 parse_mode=ParseMode.MARKDOWN
             )
             return
