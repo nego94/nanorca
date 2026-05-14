@@ -215,8 +215,8 @@ Never market orders. Never spot for short-term holds.
 | `/check TOKEN` | All | Add coin to extra scan list (persists until bot restart) |
 | `/listpriority` | All | Show extra scan list |
 | `/removepriority TOKEN` | All | Remove coin from extra scan list |
-| `/report` | All | Today's P&L, win rate, trade count |
-| `/history` | All | Last 10 closed trades |
+| `/report` | All | **All-time** P&L + win rate (default). `/report 24h`, `/report 7d`, `/report 30d` for filtered views. Shows paper/live split, avg win/loss, fees. |
+| `/history [N]` | All | Last **20** trades (default, max 100). Shows paper/live emoji per trade. `/history 50` for more. |
 | `/learning` | All | Last weekly learning report |
 | `/help` | All | Command list |
 | `/pause` | Owner | Pause trading (keeps positions open) |
@@ -578,12 +578,125 @@ command: >
 | 2026-05-15 | Fix: Grafana top stat panel 3 now shows 📄 Paper Capital (nanorca_capital_current_usd ~$13) not real USDT. Panel 4 shows 💳 Real USDT (Binance). Panel 41 chart clearly separates blue=paper capital vs green=real USDT vs orange=locked. | grafana/dashboards/nanorca.json |
 | 2026-05-15 | Fix: DB error "inconsistent types deduced for parameter $3: integer versus numeric" on ALL trade closes — asyncpg saw integer literal 0 in CASE WHEN $3 > 0 conflicting with NUMERIC column type. Fix: use 0.0 (float literal) and explicitly cast pnl/fees to float() before passing. Affected every paper trade close for 4+ hours. | db.py |
 | 2026-05-15 | DB fix: manually closed 10 stuck "open" trades (AIUSDT ×5, XRP, ZEC, INJ, SAGA, SOL) from 02:00-06:57 session using SQL UPDATE with actual P&L from Telegram. All had correct fills saved but closes failed due to type bug. | VPS SQL |
+| 2026-05-15 | Feature: /report now defaults to all-time stats (since 2020-01-01). Filtered views: /report 24h, /report 7d, /report 30d. Shows avg win/loss, fees, paper/live split. /history defaults to 20 (was 10), max 100. Paper/live emoji per trade row. Usage hints added. | telegram_bot.py |
+| 2026-05-15 | Documented: profitability break-even analysis ($125/mo overhead, need $1,000–2,000 capital for real profit, optimize to 90s scan after baseline). Grid bot architecture designed: Binance managed grid API (Option A) + manual limit order grid (Option B), Go executor handles fills event-driven, Python activates/monitors only. | NANORCA_MEMORY.md |
 
 ---
 
-## 17. Current Status & Roadmap
+## 17. Profitability Analysis & Break-even (as of 2026-05-15)
 
-**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading stable. Paper capital ~$13.13 (persists across restarts via DB snapshot). 15 trades closed correctly in DB (86.7% WR, +$2.42 P&L). /status shows correct 24h P&L from DB, correct % from actual starting capital, correct 3x paper leverage. Real account ($3-4 Binance) and paper simulation fully separated.
+### Observed Performance (Paper, 3 days)
+| Metric | Value |
+|---|---|
+| Starting capital | $11.39 |
+| Paper profit (3 days) | $2.63 |
+| Trades | 26 (73.1% WR) |
+| Paper return rate | ~7.7%/day (inflated — no slippage, instant fills) |
+
+### Monthly Costs
+| Item | Current | Optimized (90s scan) |
+|---|---|---|
+| VPS (Hostinger KVM2) | $25/mo | $25/mo |
+| Claude API (~30s cycle, pre-filter) | ~$100/mo | ~$35/mo |
+| **Total overhead** | **~$125/mo** | **~$60/mo** |
+
+### Break-even Capital Required
+| Scenario | 5%/mo live return | 10%/mo live return | 15%/mo live return |
+|---|---|---|---|
+| $125/mo overhead (current) | $2,500 | $1,250 | $833 |
+| $60/mo overhead (optimized) | $1,200 | **$600** | $400 |
+
+**Realistic live return estimate:** 5–15%/month. Paper numbers (231%/month annualized) will NOT hold live — slippage, worse fills, losing streaks, and thin order books at small capital cut results significantly.
+
+### Path to Real Profit
+
+**Step 1 — Reduce Claude API cost (biggest lever):**
+- After 14-day paper baseline (2026-05-28), increase `SCAN_INTERVAL_SECONDS=30` → `90`
+- This cuts Claude calls by ~65% → drops API cost from ~$100 to ~$35/month
+- Overhead drops from $125 to $60/month
+
+**Step 2 — Capital targets:**
+- **$500** → barely breaks even if live returns 10%+/month
+- **$1,000** → breaks even comfortably, small real profit starts appearing
+- **$2,000–3,000** → real sustainable monthly profit after all costs
+- **$5,000+** → proper income scale (e.g. $500/mo profit at 10% return on $5k capital)
+
+**Step 3 — Improve returns (in priority order):**
+1. Longer hold targets (current 0.5% target is too small → increase to 1.0–1.5% for bigger wins)
+2. Increase cooldown after LOSS on same market (30 min, not 15 min — avoid revenge entries)
+3. Multi-signal confirmation before entry (require 2+ signals, not just momentum)
+4. Add grid trading for ranging markets — earns on sideways price action where momentum bot sits idle
+5. Increase capital gradually as win rate is proven live
+
+**Bottom line:** With current settings you need ~$1,200–2,500 capital and optimized costs to break even on VPS + API overhead. For real profit: $2,000+ capital + 90s scan interval after baseline.
+
+---
+
+## 18. Grid Trading Architecture
+
+### What is grid trading
+Grid bot places buy/sell limit orders at regular price intervals. When price oscillates in a range, it earns the spread on each oscillation. Profits from **volatility** (sideways chop), unlike momentum bot which profits from **directional trends**.
+
+### Two options for running grid from outside
+
+**Option A: Binance Managed Grid (simpler)**
+- API endpoint: `POST /sapi/v1/algo/spot/newOrderGridAlgo` (spot) or `/fapi/v1/algo/futures/newOrderGridAlgo` (futures)
+- Binance manages ALL fill detection and order replacement server-side
+- Bot just calls "start grid" → Binance runs it autonomously
+- Bot monitors status via `/sapi/v1/algo/spot/openOrders`
+- Stops grid via `DELETE /sapi/v1/algo/spot/order`
+- **Advantage:** Extremely simple, no real-time fill handling needed
+- **Limitation:** Less control over grid logic, Binance determines execution
+
+**Option B: Manual Grid via Limit Orders (more control)**
+- Bot places all N buy orders + N sell orders at grid levels via standard `/fapi/v1/order`
+- Go executor WebSocket detects each fill in real-time (milliseconds)
+- On fill: Go immediately places opposite order at next grid level
+- Python brain checks grid health every 60s (not after each fill)
+- **Advantage:** Full control, works the same way as custom grid logic
+- **Limitation:** More complex, requires Go executor changes
+
+### Can the current bot handle grid transaction speed?
+
+**Yes, but with the right architecture split:**
+
+| Layer | Role | Speed |
+|---|---|---|
+| Python brain | Detect ranging market → decide to activate grid (Claude call) | 30s cycle |
+| Go executor | Detect fills via WebSocket → place next grid order | Milliseconds (real-time) |
+| Python brain | Check grid health, stop if market breaks out of range | Every 60s |
+
+**Key insight:** The 30s Python cycle is fine for **activation and monitoring**. The Go executor handles **fill reaction** event-driven. Python never needs to react to individual fills — only Go does.
+
+### Changes needed in Go executor
+- New gRPC call: `StartGrid(market, upper, lower, levels, capital_per_grid)`
+- Go manages all grid orders internally (place → fill → replace cycle)
+- New gRPC call: `StopGrid(market)` → cancels all open grid orders
+- New gRPC call: `GetGridStatus(market)` → returns current grid P&L, fill count, open orders
+- Go streams `GridFillEvent` to Python when a grid order fills (for Telegram alerts)
+
+### Grid bot activation logic (Claude's job)
+Claude detects ranging market (low ATR relative to price, oscillating around a mean) and activates a grid:
+1. Claude decides: "XRPUSDT is ranging between $0.62–$0.68, grid opportunity"
+2. Python calls `StartGrid("XRPUSDT", upper=0.68, lower=0.62, levels=10, budget=$50)`
+3. Go places 5 buy + 5 sell orders across range
+4. Go manages all fills event-driven until `StopGrid` called
+5. Claude checks every 60s: is it still ranging? If breakout → call `StopGrid`
+
+### Budget separation
+- Grid budget: separate from momentum trading budget (e.g. 30% of capital to grid, 70% to momentum)
+- Max 5 spot grids + 5 futures grids simultaneously
+- Separate DB tables: `grid_sessions`, `grid_orders` (not mixed with `trades` table)
+- Telegram commands: `/grid list`, `/grid stop SYMBOL`, `/grid status SYMBOL`
+
+### Implementation phase
+Phase B (after 14-day paper baseline confirmed). Build Option A first (Binance managed grid) — faster to implement, test that Claude activation logic works correctly, then upgrade to Option B for more control.
+
+---
+
+## 19. Current Status & Roadmap
+
+**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading stable. Paper capital ~$13.13 (persists across restarts via DB snapshot). 26 trades in DB (73.1% WR, +$2.63 paper P&L). /report now defaults to all-time stats, /history defaults to 20. /status shows correct 24h P&L from DB, correct % from actual starting capital, correct 3x paper leverage. Real account ($3-4 Binance) and paper simulation fully separated. Current monthly overhead ~$125 (Claude API ~$100 + VPS $25). See Section 17 for break-even analysis — need $1,000–2,000 capital for real profit.
 
 ### Paper Trade Data as Analysis Source
 All paper trades are saved to DB with FULL context:
