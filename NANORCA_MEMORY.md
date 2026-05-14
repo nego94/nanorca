@@ -576,6 +576,8 @@ command: >
 | 2026-05-15 | Fix: Prometheus daily_pnl_usd now updated from DB after each Claude cycle — Grafana shows accurate 24h P&L across restarts. | main.py |
 | 2026-05-15 | Fix: paper positions lost on restart — added target_price and stop_price columns to trades table (migration 003). Saved on fill. recover_open_positions() in PaperOrderBook reconstructs PaperOrder objects at startup with correct elapsed hold time so monitoring continues. | migrations/003_add_target_stop.sql, db.py, outcome_logger.py, paper_order_book.py, main.py |
 | 2026-05-15 | Fix: Grafana top stat panel 3 now shows 📄 Paper Capital (nanorca_capital_current_usd ~$13) not real USDT. Panel 4 shows 💳 Real USDT (Binance). Panel 41 chart clearly separates blue=paper capital vs green=real USDT vs orange=locked. | grafana/dashboards/nanorca.json |
+| 2026-05-15 | Fix: DB error "inconsistent types deduced for parameter $3: integer versus numeric" on ALL trade closes — asyncpg saw integer literal 0 in CASE WHEN $3 > 0 conflicting with NUMERIC column type. Fix: use 0.0 (float literal) and explicitly cast pnl/fees to float() before passing. Affected every paper trade close for 4+ hours. | db.py |
+| 2026-05-15 | DB fix: manually closed 10 stuck "open" trades (AIUSDT ×5, XRP, ZEC, INJ, SAGA, SOL) from 02:00-06:57 session using SQL UPDATE with actual P&L from Telegram. All had correct fills saved but closes failed due to type bug. | VPS SQL |
 
 ---
 
