@@ -30,9 +30,10 @@ NANORCA is an autonomous crypto trading bot built with:
 |---|---|
 | Paper trading mode | ✅ ACTIVE (`PAPER_TRADING=true`) |
 | Real Binance futures wallet funded | ✅ $11.39 USDT-M |
-| Data collection | ⚠️ Interrupted when laptop is off |
-| Win rate baseline | ⏳ Not yet (< 14 days data) |
-| VPS deployment | ❌ Not yet |
+| Data collection | ✅ 24/7 on VPS (Hostinger KVM2, 72.62.124.23) |
+| VPS deployment | ✅ LIVE since 2026-05-14 03:02 UTC |
+| Win rate baseline | ⏳ Accumulating — check back in 7-14 days |
+| First weekly learning | ⏳ Sunday 2026-05-18 00:00 UTC |
 | Live trading | 🔒 LOCKED until 14-day paper win rate ≥ 60% |
 
 **What the bot does right now:**
@@ -467,6 +468,8 @@ command: >
 | 2026-05-14 | Exclude BTC+ETH from suggestions (min lot too large / low % volatility) | suggestion_store.py, claude_brain.py |
 | 2026-05-14 | VPS deployment: Hostinger KVM2 (paper mode, IP: 72.62.124.23) | — |
 | 2026-05-14 | Fix: executor Dockerfile now generates both nanorca.pb.go AND nanorca_grpc.pb.go | executor/Dockerfile |
+| 2026-05-14 | Fix: VPS logs dir permission — mkdir -p logs && chmod 777 on host | VPS manual step |
+| 2026-05-14 | ✅ VPS FULLY OPERATIONAL — bot running 24/7 on Hostinger KVM2 | — |
 
 ---
 
