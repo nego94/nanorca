@@ -130,6 +130,8 @@ async def _process_paper_fills(
                     "filled_price":      order.fill_price,
                     "filled_size_usd":   order.size_usd,
                     "paper":             True,
+                    "target_price":      order.target_price,
+                    "stop_price":        order.stop_price,
                 },
             )
         except Exception as e:
@@ -706,9 +708,23 @@ async def run() -> None:
 
     # ── Recover open trades from DB (survives restarts) ───────────────────
     # Any open trade > 4h old is auto-expired. Recent ones are reloaded into
-    # outcome_logger so they can still be closed correctly this session.
+    # outcome_logger (_open_trades) so the close path works correctly.
     await outcome_logger.recover_from_db(max_hold_minutes=_MAX_HOLD_MINUTES)
     log.info("✅ Open trade recovery complete")
+
+    # ── Recover open paper positions into PaperOrderBook for monitoring ───
+    # Re-populates PaperOrder objects so check_exits() continues watching
+    # target/stop prices for positions that were open before the restart.
+    # Requires target_price + stop_price to be saved (migration 003+).
+    if config.paper_trading and paper_order_book:
+        open_trades = await db.get_open_trades()
+        recovered = paper_order_book.recover_open_positions(open_trades)
+        if recovered > 0:
+            log.info(f"✅ Recovered {recovered} open paper position(s) for monitoring")
+            await telegram.send_info(
+                f"📋 Recovered {recovered} open paper position(s) from before restart.\n"
+                f"Monitoring continues — target/stop checks active."
+            )
 
     # ── In paper mode: restore capital from DB snapshot or seed from real balance ──
     #

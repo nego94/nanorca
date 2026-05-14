@@ -290,6 +290,83 @@ class PaperOrderBook:
     def count_active(self) -> int:
         return sum(1 for o in self._orders.values() if o.status in ("pending", "open"))
 
+    def recover_open_positions(self, open_trades: list[dict]) -> int:
+        """
+        Reconstruct PaperOrder objects from DB records after a bot restart.
+
+        Called once at startup after outcome_logger.recover_from_db().
+        Only paper trades with target_price and stop_price stored are recovered
+        (trades opened before migration 003 won't have these and are skipped —
+        they will be expired by recover_from_db after max_hold_minutes).
+
+        Returns count of positions recovered into active monitoring.
+        """
+        from datetime import datetime, timezone
+
+        recovered = 0
+        now_utc = datetime.now(timezone.utc)
+
+        for trade in open_trades:
+            if not trade.get("paper"):
+                continue
+
+            order_id    = trade.get("exchange_order_id", "")
+            target      = trade.get("target_price")
+            stop        = trade.get("stop_price")
+            fill_price  = float(trade.get("entry_price") or 0)
+            size_usd    = float(trade.get("size_usd") or 0)
+            market      = trade.get("market", "")
+
+            if not order_id or not target or not stop or fill_price <= 0 or not market:
+                continue  # missing target/stop — can't monitor, recover_from_db handles expiry
+
+            target_f = float(target)
+            stop_f   = float(stop)
+            direction = trade.get("direction", "long")
+
+            # Approximate target_pct and stop_pct from stored prices
+            if direction == "long":
+                target_pct = (target_f - fill_price) / fill_price * 100
+                stop_pct   = (fill_price - stop_f) / fill_price * 100
+            else:
+                target_pct = (fill_price - target_f) / fill_price * 100
+                stop_pct   = (stop_f - fill_price) / fill_price * 100
+
+            # Calculate elapsed hold time so hold_minutes is accurate after restart
+            opened_at = trade.get("opened_at")
+            if opened_at and hasattr(opened_at, "tzinfo") and opened_at.tzinfo is None:
+                opened_at = opened_at.replace(tzinfo=timezone.utc)
+            age_seconds = (now_utc - opened_at).total_seconds() if opened_at else 0
+
+            order = PaperOrder(
+                order_id     = order_id,
+                exchange     = trade.get("exchange", "binance"),
+                market       = market,
+                direction    = direction,
+                entry_price  = fill_price,
+                target_price = target_f,
+                stop_price   = stop_f,
+                target_pct   = round(target_pct, 2),
+                stop_pct     = round(stop_pct, 2),
+                size_usd     = size_usd,
+                confidence   = int(trade.get("confidence_score") or 0),
+                reasoning    = trade.get("claude_reasoning", ""),
+                signals_used = trade.get("signal_mix") or [],
+            )
+            order.status     = "open"
+            order.fill_price = fill_price
+            order.filled_at  = time.monotonic() - age_seconds  # preserves elapsed hold time
+
+            self._orders[order_id] = order
+            recovered += 1
+            log.info(
+                f"Recovered paper position: {market} {direction.upper()} "
+                f"fill=${fill_price:.4f} target=${target_f:.4f} stop=${stop_f:.4f} "
+                f"held={age_seconds/60:.0f}m already"
+            )
+
+        return recovered
+
     def purge_closed(self) -> None:
         """Remove closed orders from memory (call after DB logging)."""
         self._orders = {oid: o for oid, o in self._orders.items() if o.status != "closed"}

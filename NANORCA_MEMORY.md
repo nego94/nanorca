@@ -574,6 +574,8 @@ command: >
 | 2026-05-15 | Fix: /status % change was wrong — used config.starting_capital_usd ($10) not actual synced starting capital ($11.39). Added _effective_starting to CapitalTracker. Updated by sync_from_real_balance, restored from snapshot. pct_from_start, floor_capital, _snapshot all use it. | capital_tracker.py |
 | 2026-05-15 | Fix: /status leverage showed 10x (plan value) but paper trades hardcode 3x in PaperOrderBook. Status now shows 3x for paper mode. | telegram_bot.py |
 | 2026-05-15 | Fix: Prometheus daily_pnl_usd now updated from DB after each Claude cycle — Grafana shows accurate 24h P&L across restarts. | main.py |
+| 2026-05-15 | Fix: paper positions lost on restart — added target_price and stop_price columns to trades table (migration 003). Saved on fill. recover_open_positions() in PaperOrderBook reconstructs PaperOrder objects at startup with correct elapsed hold time so monitoring continues. | migrations/003_add_target_stop.sql, db.py, outcome_logger.py, paper_order_book.py, main.py |
+| 2026-05-15 | Fix: Grafana top stat panel 3 now shows 📄 Paper Capital (nanorca_capital_current_usd ~$13) not real USDT. Panel 4 shows 💳 Real USDT (Binance). Panel 41 chart clearly separates blue=paper capital vs green=real USDT vs orange=locked. | grafana/dashboards/nanorca.json |
 
 ---
 

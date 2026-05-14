@@ -38,20 +38,22 @@
      "fieldConfig":{"defaults":{"mappings":[{"type":"value","options":{
        "1":{"text":"📄 PAPER","color":"blue"},"0":{"text":"🔴 LIVE","color":"red"}}}]}}},
 
-    {"id":3,"title":"💵 Tradeable USDT","type":"stat","gridPos":{"x":8,"y":0,"w":4,"h":3},
-     "description":"Stablecoin balance usable as futures margin. Bot sizes all positions from this amount.",
+    {"id":3,"title":"📄 Paper Capital","type":"stat","gridPos":{"x":8,"y":0,"w":4,"h":3},
+     "description":"Simulated paper trading capital. Grows/shrinks with paper trade results. NOT real money — for data collection and strategy validation only.",
+     "targets":[{"expr":"nanorca_capital_current_usd","refId":"A"}],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","color":{"mode":"thresholds"},
+       "thresholds":{"steps":[{"value":null,"color":"red"},{"value":5,"color":"yellow"},{"value":10,"color":"blue"}]},
+       "noValue":"$0.00"}}},
+
+    {"id":4,"title":"💳 Real USDT (Binance)","type":"stat","gridPos":{"x":12,"y":0,"w":4,"h":3},
+     "description":"Actual Binance USDT-M futures wallet balance. This is real money, separate from the paper simulation.",
      "targets":[{"expr":"nanorca_capital_tradeable_usd{exchange=\"binance\"}","refId":"A"}],
      "fieldConfig":{"defaults":{"unit":"currencyUSD","color":{"mode":"thresholds"},
-       "thresholds":{"steps":[{"value":null,"color":"red"},{"value":0.01,"color":"yellow"},{"value":5,"color":"green"}]},
+       "thresholds":{"steps":[{"value":null,"color":"red"},{"value":1,"color":"yellow"},{"value":10,"color":"green"}]},
        "noValue":"$0.00"}}},
 
-    {"id":4,"title":"🔒 Locked Coins","type":"stat","gridPos":{"x":12,"y":0,"w":4,"h":3},
-     "description":"Non-stablecoin coins in your wallet. Bot tracks these but cannot use them as futures margin.",
-     "targets":[{"expr":"nanorca_capital_locked_usd{exchange=\"binance\"}","refId":"A"}],
-     "fieldConfig":{"defaults":{"unit":"currencyUSD","color":{"mode":"fixed","fixedColor":"orange"},
-       "noValue":"$0.00"}}},
-
-    {"id":5,"title":"Daily P&L","type":"stat","gridPos":{"x":16,"y":0,"w":4,"h":3},
+    {"id":5,"title":"24h P&L (paper)","type":"stat","gridPos":{"x":16,"y":0,"w":4,"h":3},
+     "description":"Paper trading profit/loss in the last 24 hours. From closed paper trades in DB.",
      "targets":[{"expr":"nanorca_daily_pnl_usd","refId":"A"}],
      "fieldConfig":{"defaults":{"unit":"currencyUSD","color":{"mode":"thresholds"},
        "thresholds":{"steps":[{"value":null,"color":"red"},{"value":0,"color":"yellow"},{"value":0.01,"color":"green"}]}}}},
@@ -140,15 +142,20 @@
      "gridPos":{"x":0,"y":23,"w":24,"h":1},
      "options":{"mode":"markdown","content":"## 💹 Performance"}},
 
-    {"id":41,"title":"Capital & Real Balance Over Time","type":"timeseries",
+    {"id":41,"title":"📄 Paper Capital vs 💳 Real Balance","type":"timeseries",
+     "description":"Paper capital (blue) = simulated trading account — grows with paper wins. Real USDT (green) = actual Binance wallet — not affected by paper trades.",
      "gridPos":{"x":0,"y":24,"w":16,"h":7},
      "targets":[
-       {"expr":"nanorca_capital_current_usd","legendFormat":"Tracked Capital","refId":"A"},
-       {"expr":"nanorca_exchange_balance_usd{exchange=\"binance\"}","legendFormat":"Binance (real)","refId":"B"},
-       {"expr":"nanorca_exchange_balance_total_usd","legendFormat":"All Exchanges (real)","refId":"C"},
-       {"expr":"nanorca_daily_pnl_usd","legendFormat":"Daily P&L","refId":"D"}
+       {"expr":"nanorca_capital_current_usd","legendFormat":"📄 Paper Capital (simulated)","refId":"A"},
+       {"expr":"nanorca_capital_tradeable_usd{exchange=\"binance\"}","legendFormat":"💳 Real USDT (Binance)","refId":"B"},
+       {"expr":"nanorca_capital_locked_usd{exchange=\"binance\"}","legendFormat":"🔒 Locked Coins (Binance)","refId":"C"}
      ],
-     "fieldConfig":{"defaults":{"unit":"currencyUSD","custom":{"lineWidth":2}}}},
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","custom":{"lineWidth":2}},
+       "overrides":[
+         {"matcher":{"id":"byName","options":"📄 Paper Capital (simulated)"},"properties":[{"id":"color","value":{"mode":"fixed","fixedColor":"blue"}}]},
+         {"matcher":{"id":"byName","options":"💳 Real USDT (Binance)"},"properties":[{"id":"color","value":{"mode":"fixed","fixedColor":"green"}}]},
+         {"matcher":{"id":"byName","options":"🔒 Locked Coins (Binance)"},"properties":[{"id":"color","value":{"mode":"fixed","fixedColor":"orange"}}]}
+       ]}},
 
     {"id":42,"title":"Win Rates","type":"gauge","gridPos":{"x":16,"y":24,"w":8,"h":7},
      "targets":[

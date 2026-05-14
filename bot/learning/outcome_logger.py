@@ -97,6 +97,8 @@ class OutcomeLogger:
             "claude_reasoning":  decision.get("reasoning"),
             "paper":             result.get("paper", True),
             "exchange_order_id": order_id,
+            "target_price":      result.get("target_price"),   # saved for restart recovery
+            "stop_price":        result.get("stop_price"),     # saved for restart recovery
         }
         trade_id = await self._db.save_trade(trade)
         if order_id:

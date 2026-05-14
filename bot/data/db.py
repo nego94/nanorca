@@ -97,8 +97,8 @@ class Database:
             INSERT INTO trades (
                 exchange, market, direction, entry_price, size_usd,
                 confidence_score, signal_mix, claude_reasoning, status,
-                opened_at, paper, exchange_order_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',NOW(),$9,$10)
+                opened_at, paper, exchange_order_id, target_price, stop_price
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',NOW(),$9,$10,$11,$12)
             RETURNING id
             """,
             trade["exchange"], trade["market"], trade["direction"],
@@ -106,14 +106,22 @@ class Database:
             trade.get("confidence_score"), trade.get("signal_mix", {}),
             trade.get("claude_reasoning"), trade.get("paper", True),
             order_id,
+            trade.get("target_price"),
+            trade.get("stop_price"),
         )
         return row["id"]
 
     async def get_open_trades(self) -> list[dict]:
-        """Return all open trades for restart recovery."""
+        """
+        Return all open trades for restart recovery.
+        Includes target_price and stop_price so PaperOrderBook can reconstruct
+        open positions and continue monitoring them after restart.
+        """
         rows = await self._fetch(
             """
-            SELECT id, exchange_order_id, exchange, market, entry_price, opened_at, paper
+            SELECT id, exchange_order_id, exchange, market, direction,
+                   entry_price, size_usd, target_price, stop_price,
+                   confidence_score, signal_mix, claude_reasoning, opened_at, paper
             FROM trades WHERE status = 'open' ORDER BY opened_at
             """
         )
