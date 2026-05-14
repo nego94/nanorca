@@ -156,11 +156,11 @@ class Database:
                 status = 'closed',
                 closed_at = NOW(),
                 hold_minutes = EXTRACT(EPOCH FROM (NOW() - opened_at)) / 60,
-                outcome = CASE WHEN $3 > 0 THEN 'win' WHEN $3 < 0 THEN 'loss' ELSE 'breakeven' END,
-                win = ($3 > 0)
+                outcome = CASE WHEN $3 > 0.0 THEN 'win' WHEN $3 < 0.0 THEN 'loss' ELSE 'breakeven' END,
+                win = ($3 > 0.0)
             WHERE id = $1
             """,
-            trade_id, exit_price, pnl, fees,
+            trade_id, exit_price, float(pnl), float(fees),
         )
 
     async def close_trade_by_order_id(self, order_id: str, exit_price: float, pnl: float, fees: float) -> bool:
@@ -178,12 +178,12 @@ class Database:
                 status = 'closed',
                 closed_at = NOW(),
                 hold_minutes = EXTRACT(EPOCH FROM (NOW() - opened_at)) / 60,
-                outcome = CASE WHEN $3 > 0 THEN 'win' WHEN $3 < 0 THEN 'loss' ELSE 'breakeven' END,
-                win = ($3 > 0)
+                outcome = CASE WHEN $3 > 0.0 THEN 'win' WHEN $3 < 0.0 THEN 'loss' ELSE 'breakeven' END,
+                win = ($3 > 0.0)
             WHERE exchange_order_id = $1 AND status = 'open'
             RETURNING id
             """,
-            order_id, exit_price, pnl, fees,
+            order_id, exit_price, float(pnl), float(fees),
         )
         return row is not None
 
