@@ -468,6 +468,12 @@ async def main_loop(
     try:
         performance_ctx = await db.get_performance_context()
         decision = await claude_brain.decide(signals, signal_weights, performance_ctx)
+        # Keep Prometheus daily_pnl in sync with DB (survives restarts, not just memory)
+        metrics.update_capital(
+            capital_tracker.current_capital,
+            capital_tracker.effective_starting,
+            performance_ctx.get("daily_pnl", 0.0),
+        )
     except Exception as e:
         log.error(f"Claude brain failed: {e}")
         metrics.record_claude_error()

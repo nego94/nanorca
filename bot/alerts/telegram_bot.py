@@ -144,42 +144,49 @@ class TelegramBot:
 
         real_section = "\n".join(real_lines) if real_lines else "  _(executor not connected)_"
 
-        # ── Paper simulation (separate from real money) ────────────────────
+        # ── Paper simulation stats from DB (24h — survives restarts) ─────────
+        try:
+            perf      = await self._db.get_performance_context()
+            pnl_24h   = perf.get("daily_pnl", 0.0)
+            wr_24h    = perf.get("win_rate_24h", 0.0)
+            wr_7d     = perf.get("win_rate_7d", 0.0)
+        except Exception:
+            pnl_24h, wr_24h, wr_7d = 0.0, 0.0, 0.0
+
+        # ── Paper simulation display ───────────────────────────────────────
         paper_capital  = self._cap.current_capital
-        paper_start    = self._config.starting_capital_usd
+        paper_start    = self._cap.effective_starting   # actual synced start, not config $10
         paper_pct      = self._cap.pct_from_start
         paper_floor    = self._cap.floor_capital
         paper_above    = self._cap.pct_from_floor
-        daily_pnl      = self._cap.daily_pnl
         floor_ok       = paper_capital > paper_floor
         floor_icon     = "✅" if floor_ok else "🚨"
 
         if self._config.paper_trading and self._paper_book:
-            open_count    = self._paper_book.count_active()
-            open_detail   = self._paper_book.format_telegram() if open_count else "_No active orders_"
+            open_count = self._paper_book.count_active()
         else:
-            open_count    = 0
-            open_detail   = ""
+            open_count = 0
 
         paper_section = (
             f"  Capital:   `${paper_capital:.2f}` ({paper_pct:+.1f}% vs start `${paper_start:.2f}`)\n"
-            f"  Daily P&L: `${daily_pnl:+.2f}` (since last restart)\n"
+            f"  24h P&L:   `${pnl_24h:+.2f}` | WR: `{wr_24h:.1f}%` (24h) / `{wr_7d:.1f}%` (7d)\n"
             f"  Floor:     {floor_icon} `${paper_floor:.2f}` — {paper_above:.1f}% above\n"
             f"  Positions: {open_count}/3 open"
         )
 
         # ── Trading plan ───────────────────────────────────────────────────
         mode = TradingMode(getattr(self._config, 'trading_mode', 'nanorca_decide'))
-        params = get_plan_params(mode, paper_capital)
-        risk_usd    = paper_capital * params['risk_pct'] / 100
-        goal_pct    = params['daily_goal_pct']
-        lev         = params['leverage']
-        mode_label  = mode.value.replace("_", " ").title()
+        params     = get_plan_params(mode, paper_capital)
+        risk_usd   = paper_capital * params['risk_pct'] / 100
+        goal_pct   = params['daily_goal_pct']
+        mode_label = mode.value.replace("_", " ").title()
+        # Paper trades use 3x leverage (PaperOrderBook hardcoded), not the live plan leverage
+        paper_lev  = 3.0 if self._config.paper_trading else params['leverage']
 
         plan_section = (
             f"  Mode:   {mode_label}\n"
             f"  Risk/trade: {params['risk_pct']:.1f}% = `${risk_usd:.2f}` margin "
-            f"({lev:.0f}x → `${risk_usd * lev:.2f}` notional)\n"
+            f"({paper_lev:.0f}x → `${risk_usd * paper_lev:.2f}` notional)\n"
             f"  Goal:   +{goal_pct:.1f}%/day | Max positions: 3"
         )
 

@@ -33,6 +33,11 @@ class CapitalTracker:
         self._peak_capital = config.starting_capital_usd
         self.synced_from_real = False  # True once real exchange balance is applied
 
+        # The ACTUAL starting capital — set to real exchange balance on first sync,
+        # or restored from DB snapshot on restart. Used for accurate % calculations.
+        # Falls back to config.starting_capital_usd until first sync.
+        self._effective_starting = config.starting_capital_usd
+
         # Drawdown recovery flags — read by risk_manager and main_loop
         self.leverage_reduced = False
         self.high_risk_paused = False
@@ -41,12 +46,18 @@ class CapitalTracker:
     # ── Properties ────────────────────────────────────────────────────────
 
     @property
+    def effective_starting(self) -> float:
+        return self._effective_starting
+
+    @property
     def floor_capital(self) -> float:
-        return self._config.starting_capital_usd * (1 - self._config.capital_floor_pct / 100)
+        return self._effective_starting * (1 - self._config.capital_floor_pct / 100)
 
     @property
     def pct_from_start(self) -> float:
-        return (self.current_capital - self._config.starting_capital_usd) / self._config.starting_capital_usd * 100
+        if self._effective_starting <= 0:
+            return 0.0
+        return (self.current_capital - self._effective_starting) / self._effective_starting * 100
 
     @property
     def pct_from_floor(self) -> float:
@@ -129,33 +140,39 @@ class CapitalTracker:
         Restore capital from the last DB snapshot on bot restart.
 
         PRIMARY startup path for paper mode. Preserves accumulated paper P&L
-        across restarts instead of resetting to the real exchange balance.
-        Sets synced_from_real=True so the background sync loop cannot
-        overwrite this value with the live exchange balance.
+        across restarts. Restores effective_starting from the snapshot's
+        starting_usd (the real balance that was synced at first boot).
         """
-        total = float(snapshot.get("total_usd") or 0)
+        total    = float(snapshot.get("total_usd") or 0)
+        starting = float(snapshot.get("starting_usd") or 0)
         if total <= 0:
             return
         old = self.current_capital
-        self.current_capital    = total
-        self._day_start_capital = total
-        self._peak_capital      = max(total, self._peak_capital)
-        self.synced_from_real   = True
-        log.info(f"Capital restored from DB snapshot: ${old:.2f} → ${total:.2f}")
+        self.current_capital     = total
+        self._day_start_capital  = total
+        self._peak_capital       = max(total, self._peak_capital)
+        self.synced_from_real    = True
+        if starting > 0:
+            self._effective_starting = starting
+        log.info(
+            f"Capital restored from DB snapshot: ${old:.2f} → ${total:.2f} "
+            f"(effective start: ${self._effective_starting:.2f})"
+        )
 
     def sync_from_real_balance(self, real_usd: float) -> None:
         """
         Seed the paper trading bankroll from the real exchange balance.
         Called ONLY on first run when no DB snapshot exists yet.
-        After restore_from_snapshot() runs, synced_from_real=True blocks this.
+        Sets effective_starting so % calculations reflect the real starting point.
         """
         if real_usd <= 0:
             return
         old = self.current_capital
-        self.current_capital      = real_usd
-        self._day_start_capital   = real_usd
-        self._peak_capital        = max(real_usd, self._peak_capital)
-        self.synced_from_real     = True
+        self.current_capital     = real_usd
+        self._day_start_capital  = real_usd
+        self._peak_capital       = max(real_usd, self._peak_capital)
+        self._effective_starting = real_usd   # actual starting point for % calculations
+        self.synced_from_real    = True
         log.info(f"Capital seeded from real exchange balance: ${old:.2f} → ${real_usd:.2f}")
 
     def refresh_from_real(self, real_usd: float) -> None:
@@ -190,7 +207,7 @@ class CapitalTracker:
         try:
             await self._db.save_capital_snapshot({
                 "total_usd":    self.current_capital,
-                "starting_usd": self._config.starting_capital_usd,
+                "starting_usd": self._effective_starting,  # actual start, not config default
                 "pct_change":   self.pct_from_start,
                 "daily_pnl":    self.daily_pnl,
             })
