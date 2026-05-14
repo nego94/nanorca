@@ -328,7 +328,8 @@ Every Sunday during weekly learning:
 - Goal: Get 14+ days win rate ≥ 60%
 
 ### Phase 2 — VPS Paper → Live ($300–500)
-- Hetzner ARM64 Frankfurt OR dihostingin.com Ryzen-1 (2GB RAM + 2GB swap)
+- **Hostinger KVM2** (current plan — 8GB RAM, 2vCPU, NVMe) ← user deploying today (2026-05-14)
+- OR Hetzner ARM64 Frankfurt, OR dihostingin.com Ryzen-1 (2GB RAM + 2GB swap)
 - Paper mode continues until win rate proven
 - Flip `PAPER_TRADING=false` only when:
   1. ≥ 14 days continuous paper operation
@@ -431,6 +432,8 @@ command: >
 | 2026-05-14 | Min trade confidence raised to 65; removed 1% confidence tier | risk_manager.py, main.py |
 | 2026-05-14 | BINANCE_SCAN_TOP_N increased to 25 | .env |
 | 2026-05-14 | Documented future /check TOKEN + dynamic priority market system | NANORCA_MEMORY.md |
+| 2026-05-14 | Exclude BTC+ETH from suggestions (min lot too large / low % volatility) | suggestion_store.py, claude_brain.py |
+| 2026-05-14 | VPS deployment: Hostinger KVM2 (paper mode) | — |
 
 ---
 

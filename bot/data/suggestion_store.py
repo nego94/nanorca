@@ -14,6 +14,15 @@ from collections import deque
 from typing import Any
 
 
+# Markets always excluded from suggestions regardless of confidence.
+# BTC: min futures lot = 0.001 BTC ≈ $100 — too large for small capital (<$200)
+# ETH: lower % volatility than altcoins; better alts exist for the same signals
+_EXCLUDED_MARKETS = frozenset({
+    "BTCUSDT", "BTCBUSD", "BTCFDUSD",
+    "ETHUSDT", "ETHBUSD", "ETHFDUSD",
+})
+
+
 class SuggestionStore:
     """Holds up to MAX_SUGGESTIONS market suggestions from the 50-64 confidence band."""
 
@@ -27,12 +36,15 @@ class SuggestionStore:
         """
         Add or update a suggestion. Keeps top-MAX_SUGGESTIONS by confidence.
         Replaces an existing suggestion for the same market+direction.
+        BTC and ETH are excluded — min lot too large / too low % volatility for small capital.
         """
         confidence = decision.get("confidence", 0)
         market     = decision.get("market", "")
         direction  = (decision.get("direction") or "long").upper()
         if not market or confidence < 50 or confidence >= 65:
             return
+        if market.upper() in _EXCLUDED_MARKETS:
+            return  # skip — min lot too large or low % volatility for small capital
 
         suggestion = {
             "market":           market,

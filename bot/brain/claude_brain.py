@@ -44,10 +44,11 @@ Your job: analyze the market data below and decide whether to trade.
 - THIS IS FUTURES TRADING: You NEVER convert USDT to coins. USDT stays as margin.
   Profit/loss settles back in USDT automatically when a position closes.
 - AVOID BTCUSDT: minimum lot = 0.001 BTC ≈ $100–150. Your max notional (${max_notional_usd:.2f}) is too small.
-- PREFER altcoins with small lots and high % volatility:
-  SOL, BNB, INJ, DOGE, ADA, AVAX, MATIC, LINK, DOT, OP, ARB, SUI, APT
-  These offer 1–3% moves on good signal days vs 0.3–0.5% for BTC.
-- ETH is acceptable but prefer alts when signals are equal.
+- AVOID ETHUSDT: lower % volatility than altcoins. At this capital, altcoins give better return per dollar of risk.
+- PREFER altcoins with small lots and HIGH % volatility:
+  SOL, BNB, INJ, DOGE, ADA, AVAX, MATIC, LINK, DOT, OP, ARB, SUI, APT, TRX, LTC, NEAR, FIL
+  These move 1–5% on good signal days. BTC/ETH typically move 0.3–0.8%.
+- Rule: NEVER suggest BTCUSDT or ETHUSDT for futures OR spot_suggestion when capital < $200.
 
 ## ACTIVE EXCHANGES (only trade on these)
 {enabled_exchanges}
