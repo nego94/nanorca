@@ -108,59 +108,93 @@ class TelegramBot:
 
     async def _cmd_status(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update): await self._deny(update); return
-        from risk.circuit_breaker import BotState
-        from risk.trading_plan import TradingMode, format_plan_summary
+        from risk.trading_plan import TradingMode, get_plan_params
 
-        state_emoji = {
-            "running": "🟢", "paused_daily_loss": "🟡", "paused_consecutive": "🟡",
-            "paused_floor_hit": "🔴", "paused_manual": "⏸️",
-        }
+        # ── Bot state ──────────────────────────────────────────────────────
         s = self._cb.state
-        mode = TradingMode(getattr(self._config, 'trading_mode', 'nanorca_decide'))
-        plan_line = format_plan_summary(mode, self._cap.current_capital)
+        state_emoji = {
+            "running":             "🟢 Running",
+            "paused_daily_loss":   "🟡 Paused (daily loss cap)",
+            "paused_consecutive":  "🟡 Paused (consecutive losses)",
+            "paused_floor_hit":    "🔴 STOPPED (floor hit)",
+            "paused_manual":       "⏸️ Paused (manual)",
+        }
+        state_str = state_emoji.get(s.value, f"❓ {s.value}")
+        mode_str  = "📄 Paper Trading" if self._config.paper_trading else "🔴 Live Trading"
 
-        # Fetch real exchange balances from Go executor
-        balances = await self._router.get_balances()
-        bal_lines = []
-        real_total = 0.0
+        # ── Real account balances (actual money on exchange) ───────────────
         ex_icons = {"binance": "🟡", "hyperliquid": "🔵", "polymarket": "🟣"}
+        try:
+            balances = await self._router.get_balances()
+        except Exception:
+            balances = []
+
+        real_lines = []
+        real_total = 0.0
         for b in balances:
             icon = ex_icons.get(b["exchange"], "⚪")
-            if b["available"]:
+            name = b["exchange"].capitalize()
+            if b.get("available"):
                 usdt_free = b.get("usdt", 0)
                 total_usd = b.get("total_usd", 0)
-                bal_lines.append(
-                    f"  {icon} {b['exchange'].capitalize()}: "
-                    f"USDT free `${usdt_free:.2f}` | Total `${total_usd:.2f}`"
-                )
+                real_lines.append(f"  {icon} {name}: `${usdt_free:.2f}` free | `${total_usd:.2f}` total")
                 real_total += total_usd
             else:
-                note = b.get("error") or "unavailable"
-                bal_lines.append(f"  {icon} {b['exchange'].capitalize()}: — ({note})")
+                real_lines.append(f"  {icon} {name}: — (unavailable)")
 
-        # Do NOT sync capital tracker here in paper mode.
-        # Paper mode: Bot Tracker = simulated capital that grows/shrinks with paper P&L.
-        # Syncing from real balance on every /status call would wipe accumulated paper gains.
-        # Real balance is shown in the "Real Balances" section above — that's enough.
-        # Live mode: safe to sync since the real balance IS the capital.
+        real_section = "\n".join(real_lines) if real_lines else "  _(executor not connected)_"
 
-        bal_section = (
-            f"*💰 Real Balances*\n" + "\n".join(bal_lines) +
-            f"\n  ━━━ Total: *${real_total:.2f}*"
-        ) if bal_lines else "  _(executor not connected)_"
+        # ── Paper simulation (separate from real money) ────────────────────
+        paper_capital  = self._cap.current_capital
+        paper_start    = self._config.starting_capital_usd
+        paper_pct      = self._cap.pct_from_start
+        paper_floor    = self._cap.floor_capital
+        paper_above    = self._cap.pct_from_floor
+        daily_pnl      = self._cap.daily_pnl
+        floor_ok       = paper_capital > paper_floor
+        floor_icon     = "✅" if floor_ok else "🚨"
 
+        if self._config.paper_trading and self._paper_book:
+            open_count    = self._paper_book.count_active()
+            open_detail   = self._paper_book.format_telegram() if open_count else "_No active orders_"
+        else:
+            open_count    = 0
+            open_detail   = ""
+
+        paper_section = (
+            f"  Capital:   `${paper_capital:.2f}` ({paper_pct:+.1f}% vs start `${paper_start:.2f}`)\n"
+            f"  Daily P&L: `${daily_pnl:+.2f}` (since last restart)\n"
+            f"  Floor:     {floor_icon} `${paper_floor:.2f}` — {paper_above:.1f}% above\n"
+            f"  Positions: {open_count}/3 open"
+        )
+
+        # ── Trading plan ───────────────────────────────────────────────────
+        mode = TradingMode(getattr(self._config, 'trading_mode', 'nanorca_decide'))
+        params = get_plan_params(mode, paper_capital)
+        risk_usd    = paper_capital * params['risk_pct'] / 100
+        goal_pct    = params['daily_goal_pct']
+        lev         = params['leverage']
+        mode_label  = mode.value.replace("_", " ").title()
+
+        plan_section = (
+            f"  Mode:   {mode_label}\n"
+            f"  Risk/trade: {params['risk_pct']:.1f}% = `${risk_usd:.2f}` margin "
+            f"({lev:.0f}x → `${risk_usd * lev:.2f}` notional)\n"
+            f"  Goal:   +{goal_pct:.1f}%/day | Max positions: 3"
+        )
+
+        # ── Assemble full status ───────────────────────────────────────────
         msg = (
-            f"*NANORCA Status*\n"
-            f"State: {state_emoji.get(s.value, '❓')} `{s.value}`\n"
-            f"Mode:  {'📄 PAPER' if self._config.paper_trading else '🔴 LIVE'}\n\n"
-            f"{bal_section}\n\n"
-            f"*📊 Bot Tracker*\n"
-            f"Capital:    ${self._cap.current_capital:.2f} ({self._cap.pct_from_start:+.1f}%)\n"
-            f"Daily P&L:  ${self._cap.daily_pnl:+.2f} "
-            f"(drawdown: {self._cap.daily_drawdown_pct:.2f}%)\n"
-            f"Floor:      ${self._cap.floor_capital:.2f} "
-            f"({self._cap.pct_from_floor:.1f}% above)\n\n"
-            f"{plan_line}"
+            f"📊 *NANORCA Status*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🤖 *Bot:* {state_str}\n"
+            f"📋 *Mode:* {mode_str}\n\n"
+            f"💳 *Real Account* _(actual exchange balance)_\n"
+            f"{real_section}\n\n"
+            f"📄 *Paper Simulation* _(data collection only, not real money)_\n"
+            f"{paper_section}\n\n"
+            f"📐 *Trading Plan*\n"
+            f"{plan_section}"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 

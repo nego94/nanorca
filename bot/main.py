@@ -760,13 +760,8 @@ async def run() -> None:
 
     # ── Announce readiness ─────────────────────────────────────────────────
     await telegram.send_info(
-        f"🟢 NANORCA online\n"
-        f"Mode: {'📄 PAPER' if config.paper_trading else '🔴 LIVE'}\n"
-        f"Capital: ${capital_tracker.current_capital:.2f}\n"
-        f"Exchanges: {', '.join(sorted(config.enabled_exchanges))}\n"
-        f"Binance scan: top-{config.binance_scan_top_n} USDT pairs\n"
-        f"Scan interval: {config.scan_interval_seconds}s\n"
-        f"Priority markets: {len(config.priority_markets)} coins"
+        f"🟢 NANORCA online — {'📄 Paper' if config.paper_trading else '🔴 Live'} mode\n"
+        f"Type /status for full details."
     )
 
     # ── APScheduler: main loop + daily report + weekly learning ───────────
