@@ -34,6 +34,7 @@ NANORCA is an autonomous crypto trading bot built with:
 | VPS deployment | ✅ LIVE since 2026-05-14 03:02 UTC |
 | Win rate baseline | ⏳ Accumulating — check back in 7-14 days |
 | First weekly learning | ⏳ Sunday 2026-05-18 00:00 UTC |
+| Grafana dashboard | ✅ https://nanorca.creativorium.com (working as of 2026-05-14) |
 | Live trading | 🔒 LOCKED until 14-day paper win rate ≥ 60% |
 
 **What the bot does right now:**
