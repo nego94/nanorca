@@ -503,6 +503,13 @@ command: >
 | 2026-05-14 | Fix: startup capital sync retries up to 3× with 10s gap — executor not ready on first boot caused $10 showing at startup | main.py |
 | 2026-05-14 | Feature: config.binance_scan_top_n added — startup message now shows correct top-N (was hardcoded to 3) | config.py, main.py |
 | 2026-05-14 | Feature: /status shows USDT free + Total separately per exchange for full visibility | telegram_bot.py |
+| 2026-05-14 | Fix: /status no longer calls refresh_from_real() in paper mode — was wiping paper P&L on every /status call. Real balance shown separately, paper tracker accumulates independently. | telegram_bot.py |
+| 2026-05-14 | Fix: /report now splits Paper vs Live sections — separate win rate and P&L per mode | telegram_bot.py |
+| 2026-05-14 | Fix: /suggestion adds futures symbol aliases (PEPE→1000PEPE, SHIB→1000SHIB etc.) and detects spot-only coins (OSMO, ATOM etc.) with clear error message | telegram_bot.py |
+| 2026-05-14 | Fix: main_loop blocks spot-only coins (OSMO, ATOM etc.) from being planned as paper futures trades | main.py |
+| 2026-05-14 | Fix: _process_paper_fills sends Telegram alert when DB save fails instead of silent log | main.py |
+| 2026-05-14 | Grafana: mode dropdown filter (All/Paper/Live), separate Paper Stats and Live Stats panels, Cumulative P&L split by mode, opened_at used for trade time display | nanorca.json |
+| 2026-05-14 | Fix: Grafana mode variable uses simple string values (all/paper/live) not SQL — SQL conditions in values caused stuck state when switching modes | nanorca.json |
 
 ---
 
@@ -517,15 +524,16 @@ command: >
 - ❌ Binance AI Signal — skipped (premium API required, not accessible)
 - ❌ Next.js dashboard — skipped (Grafana is sufficient for now)
 
-### Bug Fixes Needed (Phase A — do first)
+### Bug Fixes (Phase A — COMPLETED)
 
 | # | Bug | Root Cause | Status |
 |---|---|---|---|
-| 1 | Capital shows 0 after paper trade | `refresh_from_real()` in `/status` resets paper P&L to real balance | 🔧 In progress |
-| 2 | Paper P&L overwritten on every /status | Same — real balance sync conflicts with paper simulation | 🔧 In progress |
-| 3 | /report shows 0 closed, doesn't split paper/live | No paper filter in query, close not logged properly | 🔧 In progress |
-| 4 | /suggestion says coin not found (OSMO, PEPE, 1000PEPE) | Spot-only coins have no futures; 1000PEPE naming; normalisation bug | 🔧 In progress |
-| 5 | Grafana shows no paper trade history | Trades save to DB but Grafana panel may need paper=true filter + time range fix | 🔧 In progress |
+| 1 | Capital shows 0 after paper trade | `refresh_from_real()` in `/status` reset paper P&L on every call | ✅ Fixed |
+| 2 | Paper P&L overwritten on every /status | Same — real balance sync conflicted with paper simulation | ✅ Fixed |
+| 3 | /report shows 0 closed, no paper/live split | No paper filter in query | ✅ Fixed — now separate Paper/Live sections |
+| 4 | /suggestion says OSMO/PEPE not found | Spot-only coins have no futures; 1000PEPE naming on futures | ✅ Fixed — aliases + spot-only detection |
+| 5 | Grafana shows no paper trade history | DB was empty (old trades had JSONB bug); Grafana had no mode filter | ✅ Fixed — mode dropdown, paper/live split panels |
+| 6 | Grafana mode dropdown stuck after switching to Live | Variable values contained SQL syntax causing URL encoding issues | ✅ Fixed — simple string values (all/paper/live) |
 
 ### Next Phase: Grid Trading (Phase B)
 - Spot grid: Claude activates when coin is ranging, sets price range + levels via ATR
