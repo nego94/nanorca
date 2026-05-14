@@ -534,12 +534,15 @@ command: >
 | 2026-05-15 | Fix: capital resets to real exchange balance on every restart — added restore_from_snapshot() to capital_tracker; startup reads last capital_snapshots record before any real balance sync; real balance sync only runs on first boot (no snapshot exists) | capital_tracker.py, db.py, main.py |
 | 2026-05-15 | Fix: missing DB index on exchange_order_id causing full TimescaleDB chunk scans on every paper trade close | migrations/002_add_indexes.sql |
 | 2026-05-15 | DB fix: manually corrected 11 stuck "open" trades (SAGA ×8, ZEC, SOL, DOGE) with actual P&L from Telegram history using direct SQL UPDATE | VPS SQL |
+| 2026-05-15 | Redesign: /status now shows 4 clear sections — (1) Bot state, (2) Real Account (actual Binance balance, display only), (3) Paper Simulation (paper capital, floor, daily P&L, open positions — completely separate from real money), (4) Trading Plan. Real money and paper money never mixed. | telegram_bot.py |
+| 2026-05-15 | Fix: floor check uses paper capital only — real Binance balance dropping below floor does NOT stop paper trading. Bot continues collecting data regardless of real account balance. | main.py, capital_tracker.py |
+| 2026-05-15 | Simplify: bot startup/shutdown messages now one-line only ("NANORCA online — Paper mode / Type /status for full details"). All detail moved to /status command. | main.py |
 
 ---
 
 ## 17. Current Status & Roadmap
 
-**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading active. Capital ~$12.91. DB close reliability fixed. Capital restoration on restart fixed. Historical trade data manually corrected via SQL.
+**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading stable. Paper capital ~$12.91 (persists across restarts). All Phase A+B bugs resolved. Real account ($3-4 Binance) and paper simulation fully separated — floor check uses paper capital only, bot continues collecting data regardless of real balance.
 
 ### Confirmed Feature Decisions
 - ✅ Grid trading — OUR bot does it (not Binance built-in), AI-activated, separate from momentum
