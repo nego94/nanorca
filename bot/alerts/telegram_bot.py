@@ -19,7 +19,9 @@ log = logging.getLogger("nanorca.alerts.telegram")
 class TelegramBot:
     """Telegram bot for owner notifications and two-way command interface."""
 
-    def __init__(self, config, db, circuit_breaker, capital_tracker, order_router, suggestion_store=None, extra_markets=None) -> None:
+    def __init__(self, config, db, circuit_breaker, capital_tracker, order_router,
+                 suggestion_store=None, extra_markets=None,
+                 signal_builder=None, claude_brain=None) -> None:
         self._config = config
         self._db = db
         self._cb = circuit_breaker
@@ -27,6 +29,8 @@ class TelegramBot:
         self._router = order_router
         self._suggestions = suggestion_store
         self._extra_markets = extra_markets
+        self._signal_builder = signal_builder
+        self._claude_brain = claude_brain
         self._app: Application | None = None
 
     async def start(self) -> None:
@@ -46,6 +50,8 @@ class TelegramBot:
             ("positions",    self._cmd_positions),
             ("markets",      self._cmd_markets),
             ("readmarkets",    self._cmd_markets),
+            ("suggestion",     self._cmd_suggestion),
+            ("suggest",        self._cmd_suggestion),
             ("check",          self._cmd_check),
             ("listpriority",   self._cmd_listpriority),
             ("removepriority", self._cmd_removepriority),
@@ -367,6 +373,134 @@ class TelegramBot:
             parse_mode="MarkdownV2"
         )
 
+    async def _cmd_suggestion(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """On-demand coin analysis. Usage: /suggestion PEPE or /suggest SOL"""
+        import time as _time
+        if not self._is_authorized(update): await self._deny(update); return
+
+        if not ctx.args:
+            await update.message.reply_text(
+                "Usage: `/suggestion TOKEN`\n"
+                "Example: `/suggestion PEPE` or `/suggest SOL`\n\n"
+                "Gives you an on-demand analysis with direction, confidence,\n"
+                "entry/exit prediction and reasoning. Never auto-executed.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        if not self._claude_brain:
+            await update.message.reply_text("❌ Claude brain not available.")
+            return
+
+        raw_symbol = ctx.args[0].upper().strip().lstrip("$")
+        for suffix in ("USDT", "BUSD", "USDC", "/USDT", "-USDT"):
+            if raw_symbol.endswith(suffix):
+                raw_symbol = raw_symbol[:-len(suffix)]
+                break
+        symbol = raw_symbol  # base only e.g. "PEPE"
+
+        await update.message.reply_text(f"🔍 Scanning `{symbol}USDT` — give me a moment...", parse_mode=ParseMode.MARKDOWN)
+
+        # Scan the requested coin + BTC/ETH for market context
+        try:
+            snaps = await self._router.scan_markets([symbol, "BTC", "ETH"])
+        except Exception as e:
+            await update.message.reply_text(f"❌ Scan failed: {e}")
+            return
+
+        # Find the requested coin snapshot
+        coin_snap = next((s for s in snaps if s.get("market", "").upper() == f"{symbol}USDT"
+                         and s.get("available")), None)
+
+        if not coin_snap or coin_snap.get("price", 0) == 0:
+            await update.message.reply_text(
+                f"❌ No data for `{symbol}USDT`.\n\n"
+                f"This coin may not exist on Binance Futures, or the symbol is wrong.\n"
+                f"Try: `/check {symbol}` first to add it to the scan list, then wait a few cycles.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        # Market context from BTC/ETH snapshots
+        btc_snap = next((s for s in snaps if "BTCUSDT" in s.get("market", "")), {})
+        eth_snap = next((s for s in snaps if "ETHUSDT" in s.get("market", "")), {})
+
+        # Check scan age from signal_builder price history
+        scan_age_minutes = 0.0
+        if self._signal_builder and hasattr(self._signal_builder, "_price_history"):
+            history = self._signal_builder._price_history.get(f"{symbol}USDT", [])
+            if len(history) >= 2:
+                oldest_ts = history[0][1]
+                scan_age_minutes = (_time.monotonic() - oldest_ts) / 60
+
+        btc_price = btc_snap.get("price", 0)
+        eth_price = eth_snap.get("price", 0)
+        market_bias = "neutral"
+        btc_trend = "stable"
+        if self._signal_builder and hasattr(self._signal_builder, "_price_history"):
+            btc_hist = self._signal_builder._price_history.get("BTCUSDT", [])
+            if len(btc_hist) >= 2:
+                change = (btc_hist[-1][0] - btc_hist[0][0]) / btc_hist[0][0] * 100
+                btc_trend = f"+{change:.2f}%" if change > 0 else f"{change:.2f}%"
+                market_bias = "bullish" if change > 0.2 else ("bearish" if change < -0.2 else "neutral")
+
+        market_context = {
+            "btc_price": btc_price,
+            "eth_price": eth_price,
+            "btc_trend": btc_trend,
+            "market_bias": market_bias,
+        }
+
+        # Call Claude for analysis
+        result = await self._claude_brain.analyze_on_demand(
+            symbol=symbol,
+            snapshot=coin_snap,
+            market_context=market_context,
+            scan_age_minutes=scan_age_minutes,
+        )
+
+        if not result:
+            await update.message.reply_text("❌ Claude analysis failed — try again in a moment.")
+            return
+
+        # Format result
+        direction   = result.get("direction", "neutral").upper()
+        confidence  = result.get("confidence", 0)
+        entry       = result.get("entry_zone", coin_snap.get("price", 0))
+        target      = result.get("target_price", 0)
+        stop        = result.get("stop_price", 0)
+        tgt_pct     = result.get("target_pct", 0)
+        stp_pct     = result.get("stop_pct", 0)
+        hold        = result.get("hold_estimate", "?")
+        risk        = result.get("risk_level", "?").upper()
+        reasoning   = result.get("reasoning", "—")
+        data_note   = result.get("data_note", "")
+        quality     = result.get("data_quality", "?")
+
+        dir_emoji = {"LONG": "🟢 LONG", "SHORT": "🔴 SHORT", "NEUTRAL": "⚪ NEUTRAL"}.get(direction, direction)
+        risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(risk, "⚪")
+        conf_bar = "█" * (confidence // 10) + "░" * (10 - confidence // 10)
+
+        msg = (
+            f"🔍 *ON-DEMAND ANALYSIS — {symbol}USDT*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📍 Current: `${coin_snap.get('price', 0):.6f}`\n"
+            f"📊 Direction: *{dir_emoji}*\n"
+            f"🧠 Confidence: `{confidence}/100` {conf_bar}\n\n"
+            f"🎯 Entry zone: `${entry:.6f}`\n"
+            f"✅ Target: `${target:.6f}` (+{tgt_pct:.1f}%)\n"
+            f"🛑 Stop: `${stop:.6f}` (-{stp_pct:.1f}%)\n"
+            f"⏱ Hold: `{hold}`\n"
+            f"{risk_emoji} Risk: `{risk}`\n\n"
+            f"📋 *Reasoning:*\n{reasoning}\n\n"
+            f"📡 Data quality: `{quality}` ({scan_age_minutes:.1f} min history)"
+        )
+        if data_note:
+            msg += f"\n⚠️ _{data_note}_"
+        msg += "\n\n_This is advisory only — not auto-executed by the bot._"
+
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
     async def _cmd_check(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         """Add a coin to the extra scan list. Usage: /check SOL or /check PEPE"""
         if not self._is_authorized(update): await self._deny(update); return
@@ -432,6 +566,8 @@ class TelegramBot:
             "/capital — Per-exchange balance detail\n"
             "/markets — Market suggestions (50–64 conf) + live prices\n"
             "/readmarkets — Same as /markets\n"
+            "/suggestion TOKEN — On-demand analysis: direction, confidence, entry/exit\n"
+            "/suggest TOKEN — Same as /suggestion\n"
             "/check TOKEN — Add a coin to your extra scan list (e.g. /check PEPE)\n"
             "/listpriority — Show your extra scan list\n"
             "/removepriority TOKEN — Remove a coin from extra scan list\n"

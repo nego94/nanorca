@@ -193,6 +193,90 @@ class ClaudeBrain:
         )
         return decision
 
+    async def analyze_on_demand(
+        self,
+        symbol: str,
+        snapshot: dict,
+        market_context: dict,
+        scan_age_minutes: float,
+    ) -> dict[str, Any] | None:
+        """
+        On-demand analysis for a user-requested coin via /suggestion command.
+        Returns a structured advisory dict — NEVER auto-executed.
+        Uses real current price/volume/funding data from the latest scan.
+        """
+        price       = snapshot.get("price", 0)
+        volume      = snapshot.get("volume_24h", 0)
+        funding     = snapshot.get("funding_rate", 0)
+        btc_price   = market_context.get("btc_price", 0)
+        eth_price   = market_context.get("eth_price", 0)
+        btc_trend   = market_context.get("btc_trend", "unknown")
+        market_bias = market_context.get("market_bias", "neutral")
+
+        data_quality = "full" if scan_age_minutes >= 5 else ("limited" if scan_age_minutes >= 1 else "minimal")
+
+        prompt = f"""You are NANORCA's on-demand market analyst. A user requested analysis for one specific coin.
+This is a HUMAN ADVISORY — it will NOT be auto-executed. Be direct, specific, and honest.
+
+## COIN TO ANALYZE
+Symbol: {symbol}USDT
+Current price: ${price:.6f}
+24h volume: ${volume:,.0f} USDT
+Funding rate: {funding*100:.4f}%
+Scan history: {scan_age_minutes:.1f} minutes ({data_quality} data — {'full momentum history' if scan_age_minutes >= 5 else 'limited history, give directional opinion from price/volume/funding'})
+
+## MARKET CONTEXT
+BTC: ${btc_price:,.2f} ({btc_trend})
+ETH: ${eth_price:,.2f}
+Overall market bias: {market_bias}
+
+## YOUR ANALYSIS TASK
+Give a direct trading opinion for {symbol}USDT right now.
+- Use price level, volume, funding rate, and BTC direction to form view
+- If scan history < 5 min, note it but still give directional opinion
+- Be honest: if data is too thin to have conviction, say neutral with low confidence
+
+RESPOND WITH ONLY RAW JSON — no markdown, no code fences:
+{{
+  "direction": "long" | "short" | "neutral",
+  "confidence": <integer 0-100>,
+  "entry_zone": <float, suggested entry price>,
+  "target_price": <float, profit target price>,
+  "stop_price": <float, stop loss price>,
+  "target_pct": <float, % gain from entry to target>,
+  "stop_pct": <float, % loss from entry to stop>,
+  "hold_estimate": "<e.g. 2-4 hours, 1-2 days>",
+  "risk_level": "low" | "medium" | "high",
+  "data_quality": "{data_quality}",
+  "reasoning": "<3-5 sentences: why this direction, what signals, what risks>",
+  "data_note": "<note if scan history is thin or data missing>"
+}}"""
+
+        try:
+            response = await self._client.messages.create(
+                model=self._config.claude_model_fast,
+                max_tokens=800,
+                temperature=0.2,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except anthropic.APIError as e:
+            log.error(f"Claude on-demand analysis API error: {e}")
+            return None
+
+        raw = response.content[0].text.strip()
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+        if not raw.startswith("{"):
+            s, e2 = raw.find("{"), raw.rfind("}") + 1
+            if s != -1 and e2 > s:
+                raw = raw[s:e2]
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            log.error(f"Claude on-demand analysis malformed JSON: {e}")
+            return None
+
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=2, max=10),

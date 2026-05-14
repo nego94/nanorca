@@ -481,6 +481,8 @@ async def run() -> None:
         order_router=order_router,
         suggestion_store=suggestion_store,
         extra_markets=extra_markets,
+        signal_builder=signal_builder,
+        claude_brain=claude_brain,
     )
     await telegram.start()
     log.info("✅ Telegram bot started")
