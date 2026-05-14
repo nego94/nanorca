@@ -513,6 +513,8 @@ command: >
 | 2026-05-14 | Fix: asyncpg JSONB codec registered on pool init — was rejecting Python lists for signal_mix jsonb column with "expected str, got list" → paper trades not saved to DB | db.py |
 | 2026-05-14 | Fix: duplicate paper orders on same market — now blocked if market already has pending/open order | paper_order_book.py |
 | 2026-05-14 | Feature: periodic monitoring updates every 20 min while paper position is open — shows current price, unrealized P&L, distance to target/stop | paper_order_book.py, main.py |
+| 2026-05-14 | Fix: log_trade_closed fallback — when _open_trades cleared by restart, update DB directly by exchange_order_id. Prevents trades stuck as 'open' after restart. | db.py, outcome_logger.py |
+| 2026-05-14 | Fix: capital background sync — main_loop retries real balance sync every cycle until success (synced_from_real flag). Fixes $10 stuck capital after failed startup sync. | capital_tracker.py, main.py |
 
 ---
 
