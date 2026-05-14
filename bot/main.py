@@ -632,38 +632,42 @@ async def run() -> None:
     log.info("✅ Open trade recovery complete")
 
     # ── In paper mode: sync starting capital from real exchange balance ─────
-    # This ensures trade sizing is based on what you actually have,
-    # not the static STARTING_CAPITAL_USD config value.
+    # Retries up to 3 times with 10s gap — executor may not be ready immediately.
     if config.paper_trading:
-        try:
-            real_balances = await order_router.get_balances()
-            binance_bal = next(
-                (b for b in real_balances if b.get("exchange") == "binance" and b.get("available")),
-                None,
-            )
-            if binance_bal:
-                # Prefer free USDT (futures margin). Fall back to total_usd if
-                # the futures API returns 0 free (e.g. API quirk or margin locked).
-                real_tradeable = binance_bal.get("usdt", 0)
-                if real_tradeable < 1.0:
-                    real_tradeable = binance_bal.get("total_usd", 0)
+        for _attempt in range(3):
+            try:
+                real_balances = await order_router.get_balances()
+                binance_bal = next(
+                    (b for b in real_balances if b.get("exchange") == "binance" and b.get("available")),
+                    None,
+                )
+                real_tradeable = 0.0
+                if binance_bal:
+                    real_tradeable = binance_bal.get("usdt", 0)
+                    if real_tradeable < 1.0:
+                        real_tradeable = binance_bal.get("total_usd", 0)
 
-            if binance_bal and real_tradeable > 1.0:
-                capital_tracker.sync_from_real_balance(real_tradeable)
-                metrics.update_capital(
-                    capital_tracker.current_capital,
-                    config.starting_capital_usd,
-                    capital_tracker.daily_pnl,
-                )
-                real_total_usd = binance_bal.get("total_usd", real_tradeable)
-                log.info(
-                    f"✅ Paper capital synced: tradeable=${real_tradeable:.2f} USDT "
-                    f"| portfolio=${real_total_usd:.2f}"
-                )
-            else:
-                log.info("ℹ️  No Binance balance available — using STARTING_CAPITAL_USD")
-        except Exception as e:
-            log.warning(f"Balance sync skipped: {e} — using STARTING_CAPITAL_USD")
+                if real_tradeable > 1.0:
+                    capital_tracker.sync_from_real_balance(real_tradeable)
+                    metrics.update_capital(
+                        capital_tracker.current_capital,
+                        config.starting_capital_usd,
+                        capital_tracker.daily_pnl,
+                    )
+                    log.info(
+                        f"✅ Paper capital synced: ${real_tradeable:.2f} USDT "
+                        f"(attempt {_attempt + 1})"
+                    )
+                    break
+                else:
+                    log.info(f"ℹ️  Balance not ready (attempt {_attempt + 1}/3) — retrying in 10s")
+                    await asyncio.sleep(10)
+            except Exception as e:
+                log.warning(f"Balance sync attempt {_attempt + 1} failed: {e}")
+                if _attempt < 2:
+                    await asyncio.sleep(10)
+        else:
+            log.warning("Balance sync gave up after 3 attempts — using STARTING_CAPITAL_USD")
 
     # ── Announce readiness ─────────────────────────────────────────────────
     await telegram.send_info(
