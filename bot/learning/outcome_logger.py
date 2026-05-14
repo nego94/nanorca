@@ -71,23 +71,20 @@ class OutcomeLogger:
         """Record a newly opened trade in the DB (including exchange_order_id)."""
         order_id = result.get("exchange_order_id", "")
         trade = {
-            "exchange":          decision["exchange"],
-            "market":            decision["market"],
-            "direction":         decision["direction"],
+            "exchange":          decision.get("exchange") or "binance",
+            "market":            decision.get("market", "UNKNOWN"),
+            "direction":         decision.get("direction", "long"),
             "entry_price":       result.get("filled_price"),
             "size_usd":          result.get("filled_size_usd"),
             "confidence_score":  decision.get("confidence"),
             "signal_mix":        decision.get("signals_used", []),
             "claude_reasoning":  decision.get("reasoning"),
             "paper":             result.get("paper", True),
-            "exchange_order_id": order_id,   # persisted to DB for restart recovery
+            "exchange_order_id": order_id,
         }
-        try:
-            trade_id = await self._db.save_trade(trade)
-            self._open_trades[order_id] = trade_id
-            log.info(f"Trade opened: db_id={trade_id}, order={order_id}")
-        except Exception as e:
-            log.error(f"Failed to log trade open: {e}")
+        trade_id = await self._db.save_trade(trade)
+        self._open_trades[order_id] = trade_id
+        log.info(f"Trade opened: db_id={trade_id}, order={order_id}")
 
     async def log_trade_closed(self, order_id: str, exit_price: float, pnl: float, fees: float) -> None:
         """Update the trade record when a position is closed."""

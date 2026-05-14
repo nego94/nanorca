@@ -31,6 +31,7 @@ def build_scheduler(
     metrics,
     suggestion_store=None,
     extra_markets=None,
+    paper_order_book=None,
 ) -> AsyncIOScheduler:
     """Build and return the configured APScheduler instance (not yet started)."""
     from main import main_loop
@@ -64,6 +65,7 @@ def build_scheduler(
             metrics=metrics,
             suggestion_store=suggestion_store,
             extra_markets=extra_markets,
+            paper_order_book=paper_order_book,
         ),
     )
 

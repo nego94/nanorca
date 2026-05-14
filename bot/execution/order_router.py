@@ -48,6 +48,22 @@ class OrderRouter:
             await self._channel.close()
             log.info("gRPC channel closed")
 
+    async def _reconnect_if_needed(self, error_code) -> None:
+        """Attempt to reconnect gRPC channel when executor restarts."""
+        if error_code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.INTERNAL):
+            log.warning("Executor connection lost — attempting reconnect in 5s")
+            try:
+                await self.disconnect()
+            except Exception:
+                pass
+            import asyncio
+            await asyncio.sleep(5)
+            try:
+                await self.connect()
+                log.info("gRPC reconnected to executor")
+            except Exception as e:
+                log.error(f"gRPC reconnect failed: {e}")
+
     async def scan_markets(self, markets: list[str]) -> list[dict[str, Any]]:
         """
         Call the Go executor ScanMarkets RPC.
@@ -61,7 +77,7 @@ class OrderRouter:
 
         try:
             req = pb2.MarketScanRequest(markets=markets)
-            resp = await self._stub.ScanMarkets(req, timeout=15)
+            resp = await self._stub.ScanMarkets(req, timeout=25)
             snapshots = []
             for snap in resp.snapshots:
                 snapshots.append({
@@ -79,6 +95,7 @@ class OrderRouter:
             return snapshots
         except grpc.RpcError as e:
             log.error(f"scan_markets gRPC error: {e.code()} — {e.details()}")
+            await self._reconnect_if_needed(e.code())
             return []
 
     async def place_order(self, decision: dict[str, Any], paper: bool) -> dict[str, Any]:
@@ -207,6 +224,7 @@ class OrderRouter:
             return balances
         except grpc.RpcError as e:
             log.error(f"get_balances gRPC error: {e.code()}")
+            await self._reconnect_if_needed(e.code())
             return []
 
     async def health_check(self) -> bool:

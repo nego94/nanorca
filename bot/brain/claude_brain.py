@@ -277,6 +277,98 @@ RESPOND WITH ONLY RAW JSON — no markdown, no code fences:
             log.error(f"Claude on-demand analysis malformed JSON: {e}")
             return None
 
+    async def analyze_on_demand_ruflo(
+        self,
+        symbol: str,
+        snapshot: dict,
+        market_context: dict,
+        scan_age_minutes: float,
+    ) -> dict[str, Any] | None:
+        """
+        Two-pass analysis for /suggestion (virtual ruflo pattern).
+        Pass 1 — MarketAnalyst: directional view with entry/target/stop.
+        Pass 2 — RiskAuditor: skeptical review, may lower confidence.
+        Falls back to single-pass result if Pass 2 fails.
+        """
+        # ── Pass 1: MarketAnalyst ─────────────────────────────────────────
+        analyst_result = await self.analyze_on_demand(symbol, snapshot, market_context, scan_age_minutes)
+        if not analyst_result:
+            return None
+
+        price        = snapshot.get("price", 0)
+        volume       = snapshot.get("volume_24h", 0)
+        funding      = snapshot.get("funding_rate", 0)
+        btc_price    = market_context.get("btc_price", 0)
+        btc_trend    = market_context.get("btc_trend", "unknown")
+        market_bias  = market_context.get("market_bias", "neutral")
+        data_quality = "full" if scan_age_minutes >= 5 else ("limited" if scan_age_minutes >= 1 else "minimal")
+        analyst_conf = analyst_result.get("confidence", 0)
+
+        # ── Pass 2: RiskAuditor ───────────────────────────────────────────
+        audit_prompt = f"""You are NANORCA's Risk Auditor. A Market Analyst just gave a trading opinion.
+Your job: play devil's advocate — find what could go wrong. Be skeptical but fair.
+
+## COIN: {symbol}USDT
+Price: ${price:.6f} | Volume: ${volume:,.0f} USDT | Funding: {funding*100:.4f}%
+BTC: ${btc_price:,.2f} ({btc_trend}) | Market bias: {market_bias}
+Data quality: {data_quality} ({scan_age_minutes:.1f} min history)
+
+## ANALYST'S VERDICT
+Direction: {analyst_result.get('direction', 'neutral').upper()}
+Confidence: {analyst_conf}/100
+Entry: ${analyst_result.get('entry_zone', price):.6f}
+Target: ${analyst_result.get('target_price', 0):.6f} (+{analyst_result.get('target_pct', 0):.1f}%)
+Stop: ${analyst_result.get('stop_price', 0):.6f} (-{analyst_result.get('stop_pct', 0):.1f}%)
+Hold estimate: {analyst_result.get('hold_estimate', '?')}
+Reasoning: {analyst_result.get('reasoning', '—')}
+
+## YOUR AUDIT TASK
+- What are the main risks in this trade?
+- Is the confidence level justified, or should it be lower?
+- Should the trader confirm, reduce size, or avoid?
+
+RESPOND WITH ONLY RAW JSON — no markdown, no code fences:
+{{
+  "agrees": <true if direction is sound overall, false if fundamentally flawed>,
+  "adjusted_confidence": <integer 0-100, lower the analyst's score if risks outweigh the upside>,
+  "risk_factors": ["<risk 1>", "<risk 2>"],
+  "bull_case": "<1-2 sentences: strongest argument FOR this trade>",
+  "bear_case": "<1-2 sentences: strongest argument AGAINST or biggest risk>",
+  "verdict": "confirm" | "reduce" | "avoid"
+}}"""
+
+        try:
+            response = await self._client.messages.create(
+                model=self._config.claude_model_fast,
+                max_tokens=500,
+                temperature=0.3,
+                messages=[{"role": "user", "content": audit_prompt}],
+            )
+            raw = response.content[0].text.strip()
+            if raw.startswith("```"):
+                lines = raw.splitlines()
+                raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+            if not raw.startswith("{"):
+                s, e2 = raw.find("{"), raw.rfind("}") + 1
+                if s != -1 and e2 > s:
+                    raw = raw[s:e2]
+            audit = json.loads(raw)
+        except Exception as e:
+            log.warning(f"RiskAuditor pass failed, using single-pass result: {e}")
+            analyst_result["_audit_failed"] = True
+            return analyst_result
+
+        # Auditor may lower confidence; keep analyst's price levels
+        merged = dict(analyst_result)
+        merged["_analyst_confidence"] = analyst_conf
+        merged["confidence"] = min(analyst_conf, audit.get("adjusted_confidence", analyst_conf))
+        merged["bull_case"]       = audit.get("bull_case", "")
+        merged["bear_case"]       = audit.get("bear_case", "")
+        merged["risk_factors"]    = audit.get("risk_factors", [])
+        merged["verdict"]         = audit.get("verdict", "confirm")
+        merged["auditor_agrees"]  = audit.get("agrees", True)
+        return merged
+
     @retry(
         stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=1, min=2, max=10),

@@ -199,6 +199,11 @@ Never market orders. Never spot for short-term holds.
 | `/positions` | All | Current open positions with entry/size |
 | `/markets` | All | Market suggestions (50–64 conf) + live top prices |
 | `/readmarkets` | All | Alias for `/markets` — same output |
+| `/suggestion TOKEN` | All | 2-pass (ruflo) on-demand analysis: MarketAnalyst + RiskAuditor. Returns direction/confidence/entry/target/stop/verdict. Advisory only — never executed. |
+| `/suggest TOKEN` | All | Alias for `/suggestion` |
+| `/check TOKEN` | All | Add coin to extra scan list (persists until bot restart) |
+| `/listpriority` | All | Show extra scan list |
+| `/removepriority TOKEN` | All | Remove coin from extra scan list |
 | `/report` | All | Today's P&L, win rate, trade count |
 | `/history` | All | Last 10 closed trades |
 | `/learning` | All | Last weekly learning report |
@@ -480,12 +485,26 @@ command: >
 | 2026-05-14 | Scan interval: 60s → 30s (better momentum signal quality, ~$1.16/month API vs $0.58) | .env SCAN_INTERVAL_SECONDS |
 | 2026-05-14 | Fix: Grafana 11 breaks on uid field in prometheus.yml and timescaledb:true in postgres.yml — both removed | prometheus.yml, postgres.yml, nanorca.json |
 | 2026-05-14 | Grafana datasource note: Prometheus uses isDefault:true (no uid needed). PostgreSQL uses uid:nanorca-postgres. timescaledb option removed (Grafana 11 deprecated it) | — |
+| 2026-05-14 | /suggestion now uses 2-pass "virtual ruflo": Pass 1 MarketAnalyst → Pass 2 RiskAuditor. RiskAuditor can lower confidence. Falls back to single-pass if Pass 2 fails. Cost: ~$0.002/call. | claude_brain.py, telegram_bot.py |
+| 2026-05-14 | Fix: trades not saved to DB — asyncpg rejects json.dumps() string for JSONB column; fixed by passing dict directly | db.py |
+| 2026-05-14 | Fix: null exchange from Claude silently failing NOT NULL constraint; fixed with .get("exchange") or "binance" | outcome_logger.py |
+| 2026-05-14 | Fix: trade save errors now re-raise + notify via Telegram instead of silently swallowing | outcome_logger.py, main.py |
+| 2026-05-14 | Fix: /status Bot Tracker Capital was stale (only synced at startup); now calls capital_tracker.refresh_from_real() on every /status | telegram_bot.py, capital_tracker.py |
+| 2026-05-14 | Feature: TELEGRAM_GROUP_CHAT_ID — broadcasts now go to both private chat and group if set | config.py, telegram_bot.py |
+| 2026-05-14 | Feature: PaperOrderBook — full paper trade lifecycle: PLANNED→FILLED→CLOSED with target/stop/timeout monitoring. P&L calculated in Python per close. DB saved on fill not on plan. | paper_order_book.py, main.py |
+| 2026-05-14 | Refactor: _manage_open_positions split into _process_paper_fills/_process_paper_exits (paper) and _manage_live_positions (live). Paper and live paths completely separate. | main.py |
 
 ---
 
 ## 17. Next Immediate Actions
 
-1. **Deploy latest code on VPS** — `git pull && docker compose build --no-cache executor bot && docker compose up -d`
+1. **Deploy latest code on VPS** — `git pull && docker compose build --no-cache bot && docker compose up -d bot`
+   - Scan timeout: 15s → 25s (handles 30 markets safely)
+   - Extra markets cap: 10 → 5 (top-25 auto + 5 manual = 30 total max)
+   - gRPC auto-reconnect when executor restarts
+   - Prometheus holds last known value when executor is down (no Grafana zeroes)
+   - Paper order lifecycle: PLANNED→FILLED→CLOSED with target/stop/timeout monitoring
+   - Also set on VPS: BINANCE_SCAN_TOP_N=25 (keep at 25, timeout is now safe)
 2. **Wait 24h** (user doing this 2026-05-14) — check if trades recorded: `/report` on Telegram + Grafana Trade History
 3. **If no trades** — `docker compose logs bot --since 24h | grep -E "Pre-filter|Claude|Trade"` to diagnose
 4. **Watch first paper trade** fire on Telegram (market needs to move > 0.30%)

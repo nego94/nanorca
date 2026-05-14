@@ -260,11 +260,16 @@ class PrometheusExporter:
         """
         Update real exchange balance metrics. Called every trading cycle.
 
+        If balances is empty (executor unreachable), skip the update entirely
+        so Grafana keeps the last known value instead of dropping to 0.
+
         Three-bucket model:
           tradeable = usdt field (stablecoin — usable as futures margin)
           locked    = total_usd - usdt (other coins — cannot be futures collateral directly)
           inflight  = tracked separately via open_positions_count
         """
+        if not balances:
+            return  # executor down — preserve last known metrics rather than zeroing out
         total_portfolio = 0.0
         total_tradeable = 0.0
         total_locked = 0.0

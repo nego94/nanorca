@@ -21,7 +21,7 @@ class TelegramBot:
 
     def __init__(self, config, db, circuit_breaker, capital_tracker, order_router,
                  suggestion_store=None, extra_markets=None,
-                 signal_builder=None, claude_brain=None) -> None:
+                 signal_builder=None, claude_brain=None, paper_book=None) -> None:
         self._config = config
         self._db = db
         self._cb = circuit_breaker
@@ -31,6 +31,7 @@ class TelegramBot:
         self._extra_markets = extra_markets
         self._signal_builder = signal_builder
         self._claude_brain = claude_brain
+        self._paper_book = paper_book
         self._app: Application | None = None
 
     async def start(self) -> None:
@@ -126,11 +127,31 @@ class TelegramBot:
         for b in balances:
             icon = ex_icons.get(b["exchange"], "⚪")
             if b["available"]:
-                bal_lines.append(f"  {icon} {b['exchange'].capitalize()}: ${b['total_usd']:.2f}")
-                real_total += b["total_usd"]
+                usdt_free = b.get("usdt", 0)
+                total_usd = b.get("total_usd", 0)
+                bal_lines.append(
+                    f"  {icon} {b['exchange'].capitalize()}: "
+                    f"USDT free `${usdt_free:.2f}` | Total `${total_usd:.2f}`"
+                )
+                real_total += total_usd
             else:
-                note = b["error"] or "unavailable"
+                note = b.get("error") or "unavailable"
                 bal_lines.append(f"  {icon} {b['exchange'].capitalize()}: — ({note})")
+
+        # Refresh Bot Tracker from live Binance balance so /status is always accurate.
+        # Prefer USDT free (futures margin available). If that's near 0 (e.g. the
+        # futures wallet returns 0 due to an API quirk), fall back to total_usd.
+        # Only sync if we get a meaningful value (>$1) to avoid dust artifacts.
+        binance_bal = next(
+            (b for b in balances if b.get("exchange") == "binance" and b.get("available")),
+            None,
+        )
+        if binance_bal:
+            sync_usd = binance_bal.get("usdt", 0)
+            if sync_usd < 1.0:
+                sync_usd = binance_bal.get("total_usd", 0)
+            if sync_usd > 1.0:
+                self._cap.refresh_from_real(sync_usd)
 
         bal_section = (
             f"*💰 Real Balances*\n" + "\n".join(bal_lines) +
@@ -224,23 +245,40 @@ class TelegramBot:
 
     async def _cmd_positions(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update): await self._deny(update); return
-        try:
-            positions = await self._router.get_positions()
-            if not positions:
-                await update.message.reply_text("📋 No open positions right now.")
+
+        if self._config.paper_trading:
+            # Paper mode: show PaperOrderBook (pending + open)
+            if not self._paper_book:
+                await update.message.reply_text("📋 Paper order book not available.")
                 return
-            lines = []
-            for p in positions:
-                lines.append(
-                    f"{'🟢' if p.get('side') in ('BUY','LONG') else '🔴'} "
-                    f"{p.get('exchange','?').upper()} {p.get('market','?')} "
-                    f"${p.get('size_usd',0):.2f} "
-                    f"entry@{p.get('entry_price',0):.4f}"
+            detail = self._paper_book.format_telegram()
+            pending = self._paper_book.get_pending()
+            opened  = self._paper_book.get_open()
+            header = (
+                f"📋 *Paper Orders* — {len(pending)} pending, {len(opened)} open\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            await update.message.reply_text(header + detail, parse_mode=ParseMode.MARKDOWN)
+        else:
+            # Live mode: query Go executor
+            try:
+                positions = await self._router.get_positions()
+                if not positions:
+                    await update.message.reply_text("📋 No live positions right now.")
+                    return
+                lines = []
+                for p in positions:
+                    lines.append(
+                        f"{'🟢' if p.get('side') in ('BUY','LONG') else '🔴'} "
+                        f"{p.get('exchange','?').upper()} {p.get('market','?')} "
+                        f"${p.get('size_usd',0):.2f} entry@{p.get('entry_price',0):.4f}"
+                    )
+                await update.message.reply_text(
+                    "📋 *Live positions:*\n" + "\n".join(lines),
+                    parse_mode=ParseMode.MARKDOWN
                 )
-            await update.message.reply_text("📋 *Open positions:*\n" + "\n".join(lines),
-                                            parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Could not fetch positions: {e}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Could not fetch positions: {e}")
 
     async def _cmd_markets(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         """Show market suggestions (50-64 confidence) + top live prices."""
@@ -399,7 +437,7 @@ class TelegramBot:
                 break
         symbol = raw_symbol  # base only e.g. "PEPE"
 
-        await update.message.reply_text(f"🔍 Scanning `{symbol}USDT` — give me a moment...", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text(f"🔍 Scanning `{symbol}USDT` — 2-pass analysis, takes ~5s...", parse_mode=ParseMode.MARKDOWN)
 
         # Scan the requested coin + BTC/ETH for market context
         try:
@@ -451,8 +489,8 @@ class TelegramBot:
             "market_bias": market_bias,
         }
 
-        # Call Claude for analysis
-        result = await self._claude_brain.analyze_on_demand(
+        # Two-pass ruflo analysis: MarketAnalyst → RiskAuditor
+        result = await self._claude_brain.analyze_on_demand_ruflo(
             symbol=symbol,
             snapshot=coin_snap,
             market_context=market_context,
@@ -463,41 +501,58 @@ class TelegramBot:
             await update.message.reply_text("❌ Claude analysis failed — try again in a moment.")
             return
 
-        # Format result
-        direction   = result.get("direction", "neutral").upper()
-        confidence  = result.get("confidence", 0)
-        entry       = result.get("entry_zone", coin_snap.get("price", 0))
-        target      = result.get("target_price", 0)
-        stop        = result.get("stop_price", 0)
-        tgt_pct     = result.get("target_pct", 0)
-        stp_pct     = result.get("stop_pct", 0)
-        hold        = result.get("hold_estimate", "?")
-        risk        = result.get("risk_level", "?").upper()
-        reasoning   = result.get("reasoning", "—")
-        data_note   = result.get("data_note", "")
-        quality     = result.get("data_quality", "?")
+        # ── Extract fields ────────────────────────────────────────────────
+        direction        = result.get("direction", "neutral").upper()
+        confidence       = result.get("confidence", 0)
+        analyst_conf     = result.get("_analyst_confidence", confidence)
+        entry            = result.get("entry_zone", coin_snap.get("price", 0))
+        target           = result.get("target_price", 0)
+        stop             = result.get("stop_price", 0)
+        tgt_pct          = result.get("target_pct", 0)
+        stp_pct          = result.get("stop_pct", 0)
+        hold             = result.get("hold_estimate", "?")
+        risk             = result.get("risk_level", "?").upper()
+        reasoning        = result.get("reasoning", "—")
+        data_note        = result.get("data_note", "")
+        quality          = result.get("data_quality", "?")
+        bull_case        = result.get("bull_case", "")
+        bear_case        = result.get("bear_case", "")
+        verdict          = result.get("verdict", "confirm").upper()
+        audit_failed     = result.get("_audit_failed", False)
 
-        dir_emoji = {"LONG": "🟢 LONG", "SHORT": "🔴 SHORT", "NEUTRAL": "⚪ NEUTRAL"}.get(direction, direction)
+        dir_emoji  = {"LONG": "🟢 LONG", "SHORT": "🔴 SHORT", "NEUTRAL": "⚪ NEUTRAL"}.get(direction, direction)
         risk_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}.get(risk, "⚪")
-        conf_bar = "█" * (confidence // 10) + "░" * (10 - confidence // 10)
+        conf_bar   = "█" * (confidence // 10) + "░" * (10 - confidence // 10)
+        verdict_fmt = {"CONFIRM": "✅ CONFIRM", "REDUCE": "⚠️ REDUCE SIZE", "AVOID": "🚫 AVOID"}.get(verdict, verdict)
 
+        conf_label = f"`{confidence}/100`"
+        if not audit_failed and analyst_conf != confidence:
+            conf_label += f" _(audited from {analyst_conf})_"
+
+        header = "_(single-pass — auditor unavailable)_" if audit_failed else "_2-pass: MarketAnalyst + RiskAuditor_"
         msg = (
             f"🔍 *ON-DEMAND ANALYSIS — {symbol}USDT*\n"
+            f"{header}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"📍 Current: `${coin_snap.get('price', 0):.6f}`\n"
             f"📊 Direction: *{dir_emoji}*\n"
-            f"🧠 Confidence: `{confidence}/100` {conf_bar}\n\n"
-            f"🎯 Entry zone: `${entry:.6f}`\n"
-            f"✅ Target: `${target:.6f}` (+{tgt_pct:.1f}%)\n"
-            f"🛑 Stop: `${stop:.6f}` (-{stp_pct:.1f}%)\n"
-            f"⏱ Hold: `{hold}`\n"
-            f"{risk_emoji} Risk: `{risk}`\n\n"
-            f"📋 *Reasoning:*\n{reasoning}\n\n"
-            f"📡 Data quality: `{quality}` ({scan_age_minutes:.1f} min history)"
+            f"🧠 Confidence: {conf_label} {conf_bar}\n\n"
+            f"🎯 Entry: `${entry:.6f}`\n"
+            f"✅ Target: `${target:.6f}` +{tgt_pct:.1f}%\n"
+            f"🛑 Stop: `${stop:.6f}` -{stp_pct:.1f}%\n"
+            f"⏱ Hold: `{hold}` | {risk_emoji} Risk: `{risk}`\n"
         )
+        if bull_case:
+            msg += f"\n✅ *Bull:* {bull_case}\n"
+        if bear_case:
+            msg += f"⚠️ *Risk:* {bear_case}\n"
+        if not audit_failed:
+            msg += f"\n🔎 *Verdict:* {verdict_fmt}\n"
+        msg += f"\n📋 *Reasoning:*\n{reasoning}\n\n"
+        msg += f"📡 Data: `{quality}` ({scan_age_minutes:.1f} min history)"
         if data_note:
             msg += f"\n⚠️ _{data_note}_"
-        msg += "\n\n_This is advisory only — not auto-executed by the bot._"
+        msg += "\n\n_Advisory only — never auto-executed._"
 
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -615,14 +670,19 @@ class TelegramBot:
         await self._send(msg)
 
     async def _send(self, text: str) -> None:
+        """Broadcast to owner's private chat and optionally to the group."""
         if not self._app:
             log.warning(f"Telegram not started, would send: {text[:100]}")
             return
-        try:
-            await self._app.bot.send_message(
-                chat_id=self._config.telegram_chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception as e:
-            log.error(f"Telegram send failed: {e}")
+        targets = [self._config.telegram_chat_id]
+        if self._config.telegram_group_chat_id:
+            targets.append(self._config.telegram_group_chat_id)
+        for chat_id in targets:
+            try:
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception as e:
+                log.error(f"Telegram send failed (chat={chat_id}): {e}")

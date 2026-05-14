@@ -41,6 +41,7 @@ from execution.order_router import OrderRouter
 from learning.outcome_logger import OutcomeLogger
 from data.suggestion_store import SuggestionStore
 from data.extra_markets_store import ExtraMarketsStore
+from data.paper_order_book import PaperOrderBook
 from scheduler import build_scheduler
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -101,13 +102,107 @@ def _prefilter_should_skip(signals: dict) -> tuple[bool, str]:
     return True, "all signals below pre-filter thresholds (market quiet)"
 
 
-async def _manage_open_positions(
+async def _process_paper_fills(
+    paper_book: PaperOrderBook,
+    price_map: dict,
+    outcome_logger,
+    telegram,
+) -> None:
+    """
+    Check pending paper orders for fills each cycle.
+    When price reaches the planned entry, mark as filled and save to DB.
+    """
+    newly_filled = paper_book.check_fills(price_map)
+    for order in newly_filled:
+        try:
+            await outcome_logger.log_trade_opened(
+                decision={
+                    "exchange":     order.exchange,
+                    "market":       order.market,
+                    "direction":    order.direction,
+                    "confidence":   order.confidence,
+                    "signals_used": order.signals_used,
+                    "reasoning":    order.reasoning,
+                    "size_usd":     order.size_usd,
+                },
+                result={
+                    "exchange_order_id": order.order_id,
+                    "filled_price":      order.fill_price,
+                    "filled_size_usd":   order.size_usd,
+                    "paper":             True,
+                },
+            )
+        except Exception as e:
+            log.error(f"Failed to save paper fill to DB: {e}")
+
+        await telegram.send_info(
+            f"✅ [PAPER] FILLED: {order.direction.upper()} {order.market}\n"
+            f"─────────────────────\n"
+            f"📍 Fill: `${order.fill_price:.4f}` (planned `${order.entry_price:.4f}`)\n"
+            f"🎯 Target: `${order.target_price:.4f}` (+{order.target_pct:.1f}%)\n"
+            f"🛑 Stop:   `${order.stop_price:.4f}` (-{order.stop_pct:.1f}%)\n"
+            f"💰 Size: `${order.size_usd:.2f}` margin → `${order.notional_usd:.2f}` notional\n"
+            f"⏱ Monitoring price every {config.scan_interval_seconds}s..."
+        )
+
+
+async def _process_paper_exits(
+    paper_book: PaperOrderBook,
+    price_map: dict,
+    outcome_logger,
+    capital_tracker,
+    telegram,
+    metrics,
+) -> None:
+    """
+    Check open paper orders for target hit, stop loss, or timeout each cycle.
+    Computes real P&L, updates DB, updates capital, sends Telegram result.
+    """
+    exits = paper_book.check_exits(price_map)
+    for order, reason, exit_price in exits:
+        pnl_usd, fees_usd = order.calc_pnl(exit_price)
+        pnl_pct = order.pnl_pct_from_entry(exit_price)
+        win = pnl_usd >= 0
+
+        try:
+            await outcome_logger.log_trade_closed(order.order_id, exit_price, pnl_usd, fees_usd)
+        except Exception as e:
+            log.error(f"Failed to log paper close to DB: {e}")
+
+        await capital_tracker.update_from_trade({"pnl_usd": pnl_usd, "fees_usd": fees_usd})
+
+        if reason == "target_hit":
+            result_emoji = "🎉 WIN"
+        elif reason == "stop_loss":
+            result_emoji = "❌ LOSS"
+        else:
+            result_emoji = "⏰ TIMEOUT"
+            if pnl_usd >= 0:
+                result_emoji = "⏰ TIMEOUT (profit)"
+
+        fill = order.fill_price or order.entry_price
+        await telegram.send_info(
+            f"{result_emoji} [PAPER] {order.direction.upper()} {order.market} CLOSED\n"
+            f"─────────────────────\n"
+            f"📍 Entry: `${fill:.4f}` → Exit: `${exit_price:.4f}`\n"
+            f"💰 P&L: `${pnl_usd:+.4f}` ({pnl_pct:+.2f}% on notional)\n"
+            f"⏱ Hold: {order.hold_minutes:.0f} min | Fees: `${fees_usd:.4f}`\n"
+            f"🔖 Reason: {reason.replace('_', ' ')}\n"
+            f"📊 Capital: `${capital_tracker.current_capital:.2f}`"
+        )
+        metrics.record_trade_closed(order.exchange, win, pnl_usd, order.hold_minutes)
+
+    paper_book.purge_closed()
+
+
+async def _manage_live_positions(
     order_router, outcome_logger, capital_tracker, telegram, metrics,
     market_snapshots: list,
 ) -> None:
     """
-    Check every open position each cycle.
-    Closes automatically on stop-loss hit or max hold time exceeded.
+    Live mode only: check every exchange position each cycle.
+    Closes on stop-loss or max hold time exceeded.
+    Target profit monitoring is handled by the exchange itself via stop orders.
     """
     import time as _time
 
@@ -117,14 +212,9 @@ async def _manage_open_positions(
         return
 
     metrics.open_positions_count.set(len(positions))
-
-    # Build a quick price lookup from the snapshots we just fetched
     price_map: dict[str, float] = {
-        s["market"]: s["price"]
-        for s in market_snapshots
-        if s.get("price", 0) > 0
+        s["market"]: s["price"] for s in market_snapshots if s.get("price", 0) > 0
     }
-
     now_ms = int(_time.time() * 1000)
 
     for pos in positions:
@@ -134,12 +224,11 @@ async def _manage_open_positions(
         entry    = pos.get("entry_price", 0)
         side     = pos.get("side", "BUY").upper()
         opened   = pos.get("opened_at_ms", now_ms)
-
         current_price = price_map.get(market, 0)
+
         if current_price <= 0 or entry <= 0:
             continue
 
-        # P&L % from entry (positive = winning)
         if side in ("BUY", "LONG"):
             pnl_pct = (current_price - entry) / entry * 100
         else:
@@ -153,37 +242,31 @@ async def _manage_open_positions(
             continue
 
         reason = "stop-loss" if stop_hit else f"max-hold ({hold_min:.0f}m)"
-        log.info(f"Auto-closing {market} {side}: {reason} | pnl={pnl_pct:+.2f}%")
+        log.info(f"Live auto-closing {market} {side}: {reason} | pnl={pnl_pct:+.2f}%")
 
         try:
-            close = await order_router.close_position(order_id, exchange, market)
+            close      = await order_router.close_position(order_id, exchange, market)
             exit_price = close.get("exit_price", current_price)
             pnl_usd    = close.get("pnl_usd", 0.0)
             fees_usd   = close.get("fees_usd", 0.0)
 
             await outcome_logger.log_trade_closed(order_id, exit_price, pnl_usd, fees_usd)
-            await capital_tracker.update_from_trade({
-                "pnl_usd": pnl_usd,
-                "fees_usd": fees_usd,
-            })
+            await capital_tracker.update_from_trade({"pnl_usd": pnl_usd, "fees_usd": fees_usd})
 
-            mode_tag  = "📄 PAPER" if config.paper_trading else "🔴 LIVE"
-            win       = pnl_usd >= 0
-            result_emoji = "✅ WIN" if win else "❌ LOSS"
-            pnl_pct   = (exit_price - entry) / entry * 100 if side in ("BUY","LONG") else (entry - exit_price) / entry * 100
+            result_emoji = "✅ WIN" if pnl_usd >= 0 else "❌ LOSS"
+            pnl_pct_exit = (exit_price - entry) / entry * 100 if side in ("BUY", "LONG") else (entry - exit_price) / entry * 100
 
             await telegram.send_info(
-                f"{result_emoji} [{mode_tag}] FUTURES: {side} - {market} CLOSED\n"
+                f"{result_emoji} [LIVE] FUTURES: {side} - {market} CLOSED\n"
                 f"─────────────────────\n"
                 f"📍 Entry: ${entry:.4f} → Exit: ${exit_price:.4f}\n"
-                f"💰 P&L: ${pnl_usd:+.4f} ({pnl_pct:+.2f}%)\n"
-                f"⏱ Hold: {hold_min:.0f} min\n"
-                f"🔖 Closed by: {reason}\n"
-                f"💳 Fees: ${fees_usd:.4f}"
+                f"💰 P&L: ${pnl_usd:+.4f} ({pnl_pct_exit:+.2f}%)\n"
+                f"⏱ Hold: {hold_min:.0f} min | Fees: ${fees_usd:.4f}\n"
+                f"🔖 Closed by: {reason}"
             )
             metrics.record_trade_closed(exchange, pnl_usd >= 0, pnl_usd, hold_min)
         except Exception as e:
-            log.error(f"Auto-close failed for {order_id}: {e}")
+            log.error(f"Live auto-close failed for {order_id}: {e}")
 
 
 async def main_loop(
@@ -200,6 +283,7 @@ async def main_loop(
     metrics: PrometheusExporter,
     suggestion_store: SuggestionStore,
     extra_markets: ExtraMarketsStore,
+    paper_order_book: PaperOrderBook | None = None,
 ) -> None:
     """
     Main trading cycle — runs every SCAN_INTERVAL_SECONDS.
@@ -279,11 +363,21 @@ async def main_loop(
         log.error(f"Signal build failed: {e}")
         return
 
-    # ── Step 4b: Auto-close open positions (stop-loss + max hold time) ────
-    await _manage_open_positions(
-        order_router, outcome_logger, capital_tracker, telegram, metrics,
-        market_snapshots,
-    )
+    # ── Step 4b: Position management (paper vs live) ──────────────────────
+    price_map: dict[str, float] = {
+        s["market"]: s["price"] for s in market_snapshots if s.get("price", 0) > 0
+    }
+    if config.paper_trading and paper_order_book is not None:
+        # Paper mode: full lifecycle in Python (fill → monitor → close)
+        await _process_paper_fills(paper_order_book, price_map, outcome_logger, telegram)
+        await _process_paper_exits(paper_order_book, price_map, outcome_logger, capital_tracker, telegram, metrics)
+        metrics.open_positions_count.set(len(paper_order_book.get_open()))
+    else:
+        # Live mode: query real positions from Go executor
+        await _manage_live_positions(
+            order_router, outcome_logger, capital_tracker, telegram, metrics,
+            market_snapshots,
+        )
 
     # Push live signal values to Prometheus so Grafana shows what's happening
     metrics.update_signals(signals, len(market_snapshots))
@@ -375,29 +469,22 @@ async def main_loop(
         metrics.record_skip()
         return
 
-    # ── Step 8: Risk manager approval (includes open position count check) ─
-    current_positions = await order_router.get_positions()
-    open_count = len(current_positions)
+    # ── Step 8: Risk manager approval ─────────────────────────────────────
+    # Paper: use PaperOrderBook count. Live: query Go executor.
+    if config.paper_trading and paper_order_book is not None:
+        open_count = paper_order_book.count_active()
+    else:
+        live_positions = await order_router.get_positions()
+        open_count = len(live_positions)
+
     approved, reason = await risk_manager.approve(decision, capital_tracker, open_count)
     if not approved:
-        log.info(f"Risk manager rejected trade: {reason}")
-        if "Max parallel" in reason:
-            log.info(f"Position cap hit: {open_count} open positions")
+        log.info(f"Risk manager rejected: {reason}")
         return
 
     # ── Step 9: Execute trade ─────────────────────────────────────────────
-    try:
-        trade_result = await order_router.place_order(decision, paper=config.paper_trading)
-    except Exception as e:
-        log.error(f"Order execution failed: {e}")
-        await telegram.send_warning(f"⚠️ Order execution failed: {e}")
-        return
-
-    # ── Step 9b: Broadcast formatted open position to Telegram ───────────
-    mode_tag   = "📄 PAPER" if config.paper_trading else "🔴 LIVE"
     direction  = (decision.get("direction") or "long").upper()
     market     = decision.get("market", "?")
-    entry      = trade_result.get("filled_price", 0)
     size_usd   = decision.get("size_usd", 0)
     size_pct   = decision.get("size_pct", 0)
     stop_pct   = decision.get("stop_loss_pct", 2.0)
@@ -405,31 +492,76 @@ async def main_loop(
     hold_min   = decision.get("expected_hold_minutes", 60)
     reasoning  = decision.get("reasoning", "—")
 
-    stop_price   = entry * (1 - stop_pct / 100) if direction in ("LONG", "BUY") else entry * (1 + stop_pct / 100)
-    target_price = entry * (1 + target_pct / 100) if direction in ("LONG", "BUY") else entry * (1 - target_pct / 100)
+    if config.paper_trading and paper_order_book is not None:
+        # ── Paper mode: plan the order, monitor for fill next cycles ───────
+        entry_price = price_map.get(market, 0)
+        if entry_price <= 0:
+            log.warning(f"No live price for {market} — cannot plan paper order")
+            return
 
-    await telegram.send_info(
-        f"📊 [{mode_tag}] FUTURES: {direction} - {market}\n"
-        f"─────────────────────\n"
-        f"📍 Open @${entry:.4f}\n"
-        f"🎯 Target: +{target_pct:.1f}% → ${target_price:.4f}\n"
-        f"🛑 Stop: -{stop_pct:.1f}% → ${stop_price:.4f}\n"
-        f"💰 Size: ${size_usd:.2f} ({size_pct:.1f}% of capital)\n"
-        f"🧠 Confidence: {confidence}/100\n"
-        f"⏱ Expected hold: {hold_min} min\n"
-        f"📋 {reasoning}\n"
-        f"📈 Positions open: {open_count + 1}/3"
-    )
-    log.info(
-        f"{mode_tag} Trade: {market} {direction} @{entry:.4f} "
-        f"size=${size_usd:.2f} conf={confidence}"
-    )
+        paper_order = paper_order_book.plan(decision, entry_price)
+        if paper_order is None:
+            log.info("Paper order book full — skipping")
+            return
 
-    metrics.update_claude_decision(decision.get("action", "buy"), confidence)
-    # ── Step 10: Log outcome and update metrics ────────────────────────────
-    await outcome_logger.log_trade_opened(decision, trade_result)
-    await capital_tracker.update_from_trade(trade_result)
-    metrics.record_trade(decision, trade_result)
+        stop_price   = paper_order.stop_price
+        target_price = paper_order.target_price
+        notional     = paper_order.notional_usd
+
+        await telegram.send_info(
+            f"📋 [PAPER] PLANNED: {direction} {market}\n"
+            f"─────────────────────\n"
+            f"📍 Entry: `${entry_price:.4f}` (current market price)\n"
+            f"🎯 Target: `${target_price:.4f}` (+{target_pct:.1f}%) → WIN\n"
+            f"🛑 Stop:   `${stop_price:.4f}` (-{stop_pct:.1f}%) → LOSS\n"
+            f"💰 Size: `${size_usd:.2f}` margin → `${notional:.2f}` notional (3x)\n"
+            f"🧠 Confidence: {confidence}/100\n"
+            f"⏱ Max hold: {_MAX_HOLD_MINUTES} min\n"
+            f"📋 {reasoning}\n"
+            f"⏳ Watching for fill... ({open_count + 1} active orders)"
+        )
+        log.info(f"PAPER PLANNED: {market} {direction} @{entry_price:.4f} size=${size_usd:.2f}")
+        metrics.update_claude_decision(decision.get("action", "buy"), confidence)
+        metrics.record_trade(decision, {"filled_price": entry_price, "filled_size_usd": size_usd, "paper": True})
+
+    else:
+        # ── Live mode: place real order via Go executor ────────────────────
+        try:
+            trade_result = await order_router.place_order(decision, paper=False)
+        except Exception as e:
+            log.error(f"Order execution failed: {e}")
+            await telegram.send_warning(f"⚠️ Order execution failed: {e}")
+            return
+
+        entry      = trade_result.get("filled_price", 0)
+        stop_price   = entry * (1 - stop_pct / 100) if direction in ("LONG", "BUY") else entry * (1 + stop_pct / 100)
+        target_price = entry * (1 + target_pct / 100) if direction in ("LONG", "BUY") else entry * (1 - target_pct / 100)
+
+        await telegram.send_info(
+            f"📊 [LIVE] FUTURES: {direction} - {market}\n"
+            f"─────────────────────\n"
+            f"📍 Open @${entry:.4f}\n"
+            f"🎯 Target: +{target_pct:.1f}% → ${target_price:.4f}\n"
+            f"🛑 Stop: -{stop_pct:.1f}% → ${stop_price:.4f}\n"
+            f"💰 Size: ${size_usd:.2f} ({size_pct:.1f}% of capital)\n"
+            f"🧠 Confidence: {confidence}/100\n"
+            f"⏱ Expected hold: {hold_min} min\n"
+            f"📋 {reasoning}\n"
+            f"📈 Positions open: {open_count + 1}/3"
+        )
+        log.info(f"LIVE Trade: {market} {direction} @{entry:.4f} size=${size_usd:.2f}")
+        metrics.update_claude_decision(decision.get("action", "buy"), confidence)
+
+        try:
+            await outcome_logger.log_trade_opened(decision, trade_result)
+        except Exception as e:
+            log.error(f"CRITICAL: live trade save failed — {e}")
+            await telegram.send_warning(
+                f"⚠️ Live trade executed but NOT saved to DB!\n"
+                f"Market: {market} {direction} | Error: {e}"
+            )
+        await capital_tracker.update_from_trade(trade_result)
+        metrics.record_trade(decision, trade_result)
 
     log.info("=== NANORCA cycle complete ===")
 
@@ -467,6 +599,7 @@ async def run() -> None:
     metrics            = PrometheusExporter(config)
     suggestion_store   = SuggestionStore()
     extra_markets      = ExtraMarketsStore()
+    paper_order_book   = PaperOrderBook(max_hold_minutes=_MAX_HOLD_MINUTES)
 
     # ── Start Prometheus metrics server (port 8080) ────────────────────────
     metrics.start_server(port=8080)
@@ -483,6 +616,7 @@ async def run() -> None:
         extra_markets=extra_markets,
         signal_builder=signal_builder,
         claude_brain=claude_brain,
+        paper_book=paper_order_book,
     )
     await telegram.start()
     log.info("✅ Telegram bot started")
@@ -503,25 +637,31 @@ async def run() -> None:
     if config.paper_trading:
         try:
             real_balances = await order_router.get_balances()
-            # Use usdt (stablecoin only) — this is the actual futures margin available.
-            # total_usd includes other locked coins the bot can't use as futures collateral.
-            real_tradeable = sum(b["usdt"] for b in real_balances if b.get("available") and b["usdt"] > 0)
-            if real_tradeable > 0:
+            binance_bal = next(
+                (b for b in real_balances if b.get("exchange") == "binance" and b.get("available")),
+                None,
+            )
+            if binance_bal:
+                # Prefer free USDT (futures margin). Fall back to total_usd if
+                # the futures API returns 0 free (e.g. API quirk or margin locked).
+                real_tradeable = binance_bal.get("usdt", 0)
+                if real_tradeable < 1.0:
+                    real_tradeable = binance_bal.get("total_usd", 0)
+
+            if binance_bal and real_tradeable > 1.0:
                 capital_tracker.sync_from_real_balance(real_tradeable)
                 metrics.update_capital(
                     capital_tracker.current_capital,
                     config.starting_capital_usd,
                     capital_tracker.daily_pnl,
                 )
-                real_total_usd = sum(b["total_usd"] for b in real_balances if b.get("available"))
-                locked_usd = real_total_usd - real_tradeable
+                real_total_usd = binance_bal.get("total_usd", real_tradeable)
                 log.info(
                     f"✅ Paper capital synced: tradeable=${real_tradeable:.2f} USDT "
-                    f"| locked=${locked_usd:.2f} (other coins) "
                     f"| portfolio=${real_total_usd:.2f}"
                 )
             else:
-                log.info("ℹ️  No real balance available — using STARTING_CAPITAL_USD")
+                log.info("ℹ️  No Binance balance available — using STARTING_CAPITAL_USD")
         except Exception as e:
             log.warning(f"Balance sync skipped: {e} — using STARTING_CAPITAL_USD")
 
@@ -531,8 +671,9 @@ async def run() -> None:
         f"Mode: {'📄 PAPER' if config.paper_trading else '🔴 LIVE'}\n"
         f"Capital: ${capital_tracker.current_capital:.2f}\n"
         f"Exchanges: {', '.join(sorted(config.enabled_exchanges))}\n"
-        f"Binance scan: top-{getattr(config, 'binance_scan_top_n', 3)} USDT pairs\n"
-        f"Scan interval: {config.scan_interval_seconds}s"
+        f"Binance scan: top-{config.binance_scan_top_n} USDT pairs\n"
+        f"Scan interval: {config.scan_interval_seconds}s\n"
+        f"Priority markets: {len(config.priority_markets)} coins"
     )
 
     # ── APScheduler: main loop + daily report + weekly learning ───────────
@@ -551,6 +692,7 @@ async def run() -> None:
         metrics=metrics,
         suggestion_store=suggestion_store,
         extra_markets=extra_markets,
+        paper_order_book=paper_order_book,
     )
     scheduler.start()
     log.info("✅ Scheduler started — NANORCA fully operational")

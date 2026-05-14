@@ -140,6 +140,18 @@ class CapitalTracker:
             f"${old:.2f} → ${real_usd:.2f}"
         )
 
+    def refresh_from_real(self, real_usd: float) -> None:
+        """
+        Refresh current_capital from the live exchange balance without
+        resetting daily P&L counters. Called by /status so the display
+        always shows the real value, not a stale startup snapshot.
+        """
+        if real_usd <= 0:
+            return
+        self.current_capital = real_usd
+        if real_usd > self._peak_capital:
+            self._peak_capital = real_usd
+
     # ── Trade result updates ───────────────────────────────────────────────
 
     async def update_from_trade(self, trade_result: dict) -> None:

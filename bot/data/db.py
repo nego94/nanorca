@@ -76,7 +76,7 @@ class Database:
             """,
             trade["exchange"], trade["market"], trade["direction"],
             trade.get("entry_price"), trade.get("size_usd"),
-            trade.get("confidence_score"), json.dumps(trade.get("signal_mix", {})),
+            trade.get("confidence_score"), trade.get("signal_mix", {}),
             trade.get("claude_reasoning"), trade.get("paper", True),
             trade.get("exchange_order_id", ""),
         )
@@ -203,7 +203,7 @@ class Database:
             report["period_start"], report["period_end"],
             report.get("total_trades"), report.get("win_rate"),
             report.get("total_pnl"), report.get("claude_analysis"),
-            json.dumps(report.get("weight_changes", {})),
+            report.get("weight_changes", {}),
             report.get("applied", False),
             report.get("confidence_in_analysis"),
         )

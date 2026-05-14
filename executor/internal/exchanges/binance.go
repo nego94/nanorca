@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -28,19 +29,19 @@ type BinanceClient struct {
 	wsURL      string
 	apiKey     string
 	apiSecret  string
+	mu         sync.RWMutex       // protects prices map (concurrent goroutine access)
 	prices     map[string]float64 // last-seen price cache for paper simulation
 }
 
-
 // NewBinanceClient builds a Binance client from env vars.
 func NewBinanceClient(logger *zap.Logger, paperMode bool) *BinanceClient {
-	baseURL    := "https://api.binance.com"
+	baseURL := "https://api.binance.com"
 	futuresURL := "https://fapi.binance.com"
-	wsURL      := "wss://stream.binance.com:9443"
+	wsURL := "wss://stream.binance.com:9443"
 	if getEnv("BINANCE_TESTNET", "false") == "true" {
-		baseURL    = "https://testnet.binance.vision"
+		baseURL = "https://testnet.binance.vision"
 		futuresURL = "https://testnet.binancefuture.com"
-		wsURL      = "wss://testnet.binance.vision/ws"
+		wsURL = "wss://testnet.binance.vision/ws"
 	}
 	return &BinanceClient{
 		logger:     logger.Named("binance"),
@@ -76,7 +77,9 @@ func (b *BinanceClient) GetPrice(ctx context.Context, symbol string) (float64, e
 	if err := unmarshal(body, &r); err != nil {
 		return 0, err
 	}
+	b.mu.Lock()
 	b.prices[symbol] = r.Price
+	b.mu.Unlock()
 	b.logger.Debug("Binance price", zap.String("sym", symbol), zap.Float64("price", r.Price))
 	return r.Price, nil
 }
@@ -134,8 +137,10 @@ func (b *BinanceClient) GetFundingRate(ctx context.Context, symbol string) (floa
 // GetAccountBalance fetches Binance balances with a clean tradeable/locked split.
 //
 // USDT field    = stablecoin usable as futures margin.
-//                 Checks BOTH spot and USDT-M futures wallets — uses whichever has funds.
-//                 Users who transferred to futures will show balance here, not in spot.
+//
+//	Checks BOTH spot and USDT-M futures wallets — uses whichever has funds.
+//	Users who transferred to futures will show balance here, not in spot.
+//
 // TotalUSD field = full portfolio value (all wallets, BTC-converted).
 // Locked        = TotalUSD - USDT (other coins not usable as futures margin directly).
 //
@@ -145,9 +150,9 @@ func (b *BinanceClient) GetAccountBalance(ctx context.Context) (*ExchangeBalance
 		return &ExchangeBalance{Exchange: "binance", Error: "BINANCE_API_KEY not set"}, nil
 	}
 
-	spotUSDT    := b.spotBalanceUSDT(ctx)    // USDT/USDC/BUSD in spot wallet
-	futuresUSDT := b.futuresWalletUSDT(ctx)  // USDT in USDT-M futures account
-	allWalletsUSD := b.allWalletsUSD(ctx)    // total portfolio (BTC-converted, all wallets)
+	spotUSDT := b.spotBalanceUSDT(ctx)      // USDT/USDC/BUSD in spot wallet
+	futuresUSDT := b.futuresWalletUSDT(ctx) // USDT in USDT-M futures account
+	allWalletsUSD := b.allWalletsUSD(ctx)   // total portfolio (BTC-converted, all wallets)
 
 	// Tradeable = wherever the USDT actually is — spot or futures
 	tradeableUSDT := spotUSDT + futuresUSDT
@@ -185,18 +190,27 @@ func (b *BinanceClient) futuresWalletUSDT(ctx context.Context) float64 {
 		map[string]string{"X-MBX-APIKEY": b.apiKey},
 		b.logger)
 	if err != nil {
-		b.logger.Debug("Futures wallet balance unavailable (need futures permission)", zap.Error(err))
+		b.logger.Warn("Futures wallet balance FAILED — check API key has 'Enable Futures' permission",
+			zap.Error(err))
 		return 0
 	}
 	var balances []struct {
-		Asset              string  `json:"asset"`
-		AvailableBalance   float64 `json:"availableBalance,string"`
+		Asset            string  `json:"asset"`
+		WalletBalance    float64 `json:"balance,string"`
+		AvailableBalance float64 `json:"availableBalance,string"`
 	}
 	if err := unmarshal(body, &balances); err != nil {
+		b.logger.Warn("Futures balance parse error", zap.Error(err))
 		return 0
 	}
 	for _, b := range balances {
 		if b.Asset == "USDT" {
+			// WalletBalance = total USDT in account (includes locked margin).
+			// AvailableBalance = only free USDT. We use WalletBalance so paper
+			// trading doesn't show $0 just because a live position locked some margin.
+			if b.WalletBalance > 0 {
+				return b.WalletBalance
+			}
 			return b.AvailableBalance
 		}
 	}
@@ -274,7 +288,9 @@ func (b *BinanceClient) allWalletsUSD(ctx context.Context) float64 {
 		return 0
 	}
 	// Convert BTC → USD using cached price or live fetch
+	b.mu.RLock()
 	btcUSD := b.prices["BTCUSDT"]
+	b.mu.RUnlock()
 	if btcUSD == 0 {
 		btcUSD, _ = b.GetPrice(ctx, "BTCUSDT")
 	}
@@ -304,7 +320,9 @@ func (b *BinanceClient) CloseOrder(ctx context.Context, orderID, symbol, side st
 func (b *BinanceClient) simOrder(ctx context.Context, symbol, side string, sizeUSD float64) (string, float64, float64, error) {
 	price, _ := b.GetPrice(ctx, symbol)
 	if price == 0 {
+		b.mu.RLock()
 		price = b.prices[symbol]
+		b.mu.RUnlock()
 	}
 	if price == 0 {
 		return "", 0, 0, fmt.Errorf("no price for %s", symbol)
@@ -326,7 +344,9 @@ func (b *BinanceClient) simOrder(ctx context.Context, symbol, side string, sizeU
 func (b *BinanceClient) simClose(ctx context.Context, symbol string) (float64, float64, float64, error) {
 	price, _ := b.GetPrice(ctx, symbol)
 	if price == 0 {
+		b.mu.RLock()
 		price = b.prices[symbol]
+		b.mu.RUnlock()
 	}
 	// Futures maker fee on close side: 0.02%
 	return price, 0, price * 0.0002, nil

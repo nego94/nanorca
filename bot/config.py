@@ -55,6 +55,11 @@ class Config:
     # ── Telegram ───────────────────────────────────────────────────────────
     telegram_bot_token: str     = field(default_factory=lambda: _require("TELEGRAM_BOT_TOKEN"))
     telegram_chat_id: str       = field(default_factory=lambda: _require("TELEGRAM_CHAT_ID"))
+    # Optional group chat ID — if set, broadcasts (trades, alerts, daily report)
+    # are sent to BOTH the owner's private chat AND the group.
+    # Commands (/status, /report, etc.) always respond only to the sender.
+    # Get group ID: add @userinfobot to the group, it will show the group's chat_id.
+    telegram_group_chat_id: str = field(default_factory=lambda: _get("TELEGRAM_GROUP_CHAT_ID", ""))
     # Comma-separated Telegram user IDs allowed to use the bot.
     # The owner (TELEGRAM_CHAT_ID) is always included automatically.
     # Get any user's ID by having them message @userinfobot.
@@ -92,7 +97,8 @@ class Config:
 
     # ── Operation ──────────────────────────────────────────────────────────
     paper_trading: bool         = field(default_factory=lambda: _get_bool("PAPER_TRADING", True))
-    scan_interval_seconds: int  = field(default_factory=lambda: _get_int("SCAN_INTERVAL_SECONDS", 60))
+    scan_interval_seconds: int  = field(default_factory=lambda: _get_int("SCAN_INTERVAL_SECONDS", 30))
+    binance_scan_top_n: int     = field(default_factory=lambda: _get_int("BINANCE_SCAN_TOP_N", 25))
     bot_timezone: str           = field(default_factory=lambda: _get("BOT_TIMEZONE", "Asia/Makassar"))
     priority_markets: list      = field(default_factory=lambda: _get("PRIORITY_MARKETS", "BTC,ETH,SOL").split(","))
     log_level: str              = field(default_factory=lambda: _get("LOG_LEVEL", "INFO"))
