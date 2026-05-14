@@ -17,6 +17,9 @@ NANORCA is an autonomous crypto trading bot built with:
 **Architecture:** Python ↔ gRPC ↔ Go ↔ Binance/Hyperliquid/Polymarket
 
 ---
+> **Last updated:** 2026-05-14 (VPS deployment day — Hostinger KVM2)
+
+---
 
 ## 2. Current Phase
 
@@ -133,14 +136,19 @@ Every 60 seconds:
 1. Bot state check          → skip if paused/stopped
 2. Capital floor check      → emergency stop if < 25% of starting capital
 3. Daily loss check         → pause if daily loss > 8%
-4. Market scan              → Go executor fetches top-20 Binance USDT pairs
+4. Market scan              → Go executor fetches top-25 Binance USDT pairs (incl. BTC/ETH for direction)
 5. Auto-close positions     → stop-loss (-2%) or max hold (4h) trigger
 6. Build signals            → momentum, volume spike, funding rate, price gap
 7. Pre-filter               → skip Claude if: momentum < 0.30% AND volume < 1.20x AND funding < 0.01%
 8. MIN_GROSS_MOVE check     → skip if momentum < 0.09% (can't cover 0.04% round-trip fee)
-9. Call Claude Haiku        → get: action, market, direction, size_pct, confidence, reasoning, target_profit_pct, stop_loss_pct, spot_suggestion
-10. Spot suggestion check   → if active + conf ≥ 65 → send Telegram suggestion (NOT executed)
-11. Confidence gate         → skip if < 55 (hard skip regardless of action)
+9. Call Claude Haiku        → get: action, market, direction, size_pct, confidence, reasoning,
+                               target_profit_pct, stop_loss_pct, spot_suggestion
+                               Claude reads BTC/ETH as market direction, trades only altcoins
+10. Spot suggestion check   → if active + conf ≥ 65 → send Telegram (NOT executed)
+11. Confidence gate:
+    < 50  → hard skip, nothing logged
+    50-64 → add to SuggestionStore → surfaced via /markets (BTC/ETH filtered out)
+    65+   → proceed to trade
 12. Open position count     → skip if 3 positions already open (MAX_OPEN_POSITIONS=3)
 13. Risk manager approval   → graduated sizing + leverage cap + exposure check
 14. Execute (paper or live) → Go executor PlaceOrder
@@ -241,13 +249,36 @@ SPOT: LONG - SOLUSDT
 
 ---
 
-## 10. Active Exchanges
+## 10. Active Exchanges & Market Roles
 
 | Exchange | Trading | Intelligence | Phase |
 |---|---|---|---|
 | Binance USDT-M Futures | ✅ Active | ✅ Market scanner | Phase 2+ |
 | Hyperliquid | ❌ Disabled | ✅ Funding rate signal | Phase 3 |
 | Polymarket | ❌ Disabled | ✅ Price gap signal | Phase 3 |
+
+### BTC and ETH — Analysis Only, Never Traded
+
+**Critical distinction (user confirmed 2026-05-14):**
+
+| Role | BTC | ETH | Altcoins (SOL/BNB/INJ etc.) |
+|---|---|---|---|
+| Scanned for price/volume | ✅ Yes | ✅ Yes | ✅ Yes |
+| Used as market direction signal | ✅ Yes — primary | ✅ Yes — secondary | Used as trade targets |
+| In PRIORITY_MARKETS | ✅ Yes | ✅ Yes | ✅ Yes |
+| Suggested for trading | ❌ Never | ❌ Never | ✅ These are traded |
+| In suggestion store (50-64 conf) | ❌ Filtered out | ❌ Filtered out | ✅ Shown |
+
+**Why BTC/ETH are kept in analysis:**
+- BTC momentum tells Claude the overall crypto market direction
+- If BTC +1% → market bullish → increases confidence in altcoin LONG signals
+- If BTC -2% → market risk-off → reduces confidence in any LONG, increases SHORT bias
+- ETH momentum signals DeFi and Layer-1 sentiment specifically
+
+**Why BTC/ETH are excluded from trading:**
+- BTCUSDT min futures lot = 0.001 BTC ≈ $100+ (too large for $11 capital)
+- ETHUSDT: lower % daily moves than altcoins → less profit per unit of risk at small capital
+- Rule: when capital > $500, reassess whether to add ETH trading
 
 ---
 

@@ -43,12 +43,13 @@ Your job: analyze the market data below and decide whether to trade.
 - At 3x leverage: ~${max_notional_usd:.2f} notional position size
 - THIS IS FUTURES TRADING: You NEVER convert USDT to coins. USDT stays as margin.
   Profit/loss settles back in USDT automatically when a position closes.
-- AVOID BTCUSDT: minimum lot = 0.001 BTC ≈ $100–150. Your max notional (${max_notional_usd:.2f}) is too small.
-- AVOID ETHUSDT: lower % volatility than altcoins. At this capital, altcoins give better return per dollar of risk.
-- PREFER altcoins with small lots and HIGH % volatility:
+- USE BTC and ETH as MARKET DIRECTION INDICATORS only — their momentum and volume tell you where the whole market is heading. If BTC drops 2%, expect altcoins to follow. Read their snapshot data.
+- DO NOT TRADE BTCUSDT: minimum lot = 0.001 BTC ≈ $100–150. Your max notional (${max_notional_usd:.2f}) is too small to open even one contract.
+- DO NOT TRADE ETHUSDT: lower % volatility vs altcoins at this capital level; better opportunities exist.
+- TRADE ONLY altcoins with small lots and HIGH % volatility:
   SOL, BNB, INJ, DOGE, ADA, AVAX, MATIC, LINK, DOT, OP, ARB, SUI, APT, TRX, LTC, NEAR, FIL
-  These move 1–5% on good signal days. BTC/ETH typically move 0.3–0.8%.
-- Rule: NEVER suggest BTCUSDT or ETHUSDT for futures OR spot_suggestion when capital < $200.
+  These move 1–5% on good signal days. Use BTC/ETH momentum as a confirmation signal for altcoin direction.
+- Example reasoning: "BTC momentum +0.4% → market bullish bias → look for SOLUSDT LONG opportunity"
 
 ## ACTIVE EXCHANGES (only trade on these)
 {enabled_exchanges}
