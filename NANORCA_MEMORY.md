@@ -137,7 +137,8 @@ Every 60 seconds:
 1. Bot state check          → skip if paused/stopped
 2. Capital floor check      → emergency stop if < 25% of starting capital
 3. Daily loss check         → pause if daily loss > 8%
-4. Market scan              → Go executor fetches top-25 Binance USDT pairs (incl. BTC/ETH for direction)
+4. Market scan              → Go executor fetches top-25 Binance USDT pairs every 30s (incl. BTC/ETH for direction)
+                               WebSocket feeds live bid/ask data between cycles
 5. Auto-close positions     → stop-loss (-2%) or max hold (4h) trigger
 6. Build signals            → momentum, volume spike, funding rate, price gap
 7. Pre-filter               → skip Claude if: momentum < 0.30% AND volume < 1.20x AND funding < 0.01%
@@ -472,6 +473,7 @@ command: >
 | 2026-05-14 | Fix: VPS logs dir permission — mkdir -p logs && chmod 777 on host | VPS manual step |
 | 2026-05-14 | ✅ VPS FULLY OPERATIONAL — bot running 24/7 on Hostinger KVM2 | — |
 | 2026-05-14 | Domain setup: nanorca.creativorium.com → Grafana via Nginx Proxy Manager + Let's Encrypt SSL | VPS /root/proxy/ |
+| 2026-05-14 | Scan interval: 60s → 30s (better momentum signal quality, ~$1.16/month API vs $0.58) | .env SCAN_INTERVAL_SECONDS |
 
 ---
 
