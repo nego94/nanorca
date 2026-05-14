@@ -163,12 +163,19 @@ async def _manage_open_positions(
                 "fees_usd": fees_usd,
             })
 
-            emoji = "✅" if pnl_usd >= 0 else "❌"
+            mode_tag  = "📄 PAPER" if config.paper_trading else "🔴 LIVE"
+            win       = pnl_usd >= 0
+            result_emoji = "✅ WIN" if win else "❌ LOSS"
+            pnl_pct   = (exit_price - entry) / entry * 100 if side in ("BUY","LONG") else (entry - exit_price) / entry * 100
+
             await telegram.send_info(
-                f"{emoji} [PAPER] Position closed — {reason}\n"
-                f"{exchange.upper()} {market}\n"
-                f"Entry: ${entry:.4f} → Exit: ${exit_price:.4f}\n"
-                f"P&L: ${pnl_usd:+.4f} | Hold: {hold_min:.0f}m"
+                f"{result_emoji} [{mode_tag}] FUTURES: {side} - {market} CLOSED\n"
+                f"─────────────────────\n"
+                f"📍 Entry: ${entry:.4f} → Exit: ${exit_price:.4f}\n"
+                f"💰 P&L: ${pnl_usd:+.4f} ({pnl_pct:+.2f}%)\n"
+                f"⏱ Hold: {hold_min:.0f} min\n"
+                f"🔖 Closed by: {reason}\n"
+                f"💳 Fees: ${fees_usd:.4f}"
             )
             metrics.record_trade_closed(exchange, pnl_usd >= 0, pnl_usd, hold_min)
         except Exception as e:
@@ -318,25 +325,77 @@ async def main_loop(
         metrics.record_skip()
         return
 
-    # ── Step 8: Risk manager approval ─────────────────────────────────────
-    approved, reason = await risk_manager.approve(decision, capital_tracker)
+    # ── Step 7b: Handle spot suggestion (separate from futures decision) ──
+    spot = decision.get("spot_suggestion", {})
+    if spot.get("active") and spot.get("confidence", 0) >= 65:
+        mode_tag = "📄 PAPER" if config.paper_trading else "🔴 LIVE"
+        await telegram.send_info(
+            f"💡 SPOT SUGGESTION [{mode_tag}]\n"
+            f"─────────────────────\n"
+            f"SPOT: {spot.get('direction','long').upper()} - {spot.get('market','?')}\n"
+            f"🗓 Hold: {spot.get('hold_period','?')}\n"
+            f"🎯 Target date: {spot.get('target_date','?')}\n"
+            f"🧠 Confidence: {spot.get('confidence',0)}/100\n"
+            f"📋 {spot.get('reason','')}\n"
+            f"⚠️ Manual action only — bot does NOT execute spot trades"
+        )
+        log.info(f"Spot suggestion sent: {spot.get('market')} {spot.get('direction')} conf={spot.get('confidence')}")
+
+    # Skip if Claude decided skip (after spot suggestion processed above)
+    if decision.get("action") == "skip":
+        metrics.update_claude_decision("skip", confidence)
+        metrics.record_skip()
+        return
+
+    # ── Step 8: Risk manager approval (includes open position count check) ─
+    current_positions = await order_router.get_positions()
+    open_count = len(current_positions)
+    approved, reason = await risk_manager.approve(decision, capital_tracker, open_count)
     if not approved:
         log.info(f"Risk manager rejected trade: {reason}")
+        if "Max parallel" in reason:
+            log.info(f"Position cap hit: {open_count} open positions")
         return
 
     # ── Step 9: Execute trade ─────────────────────────────────────────────
     try:
         trade_result = await order_router.place_order(decision, paper=config.paper_trading)
-        paper_prefix = "[PAPER] " if config.paper_trading else ""
-        log.info(
-            f"{paper_prefix}Trade executed: {decision['exchange']} "
-            f"{decision['market']} {decision['direction']} "
-            f"size={decision['size_pct']}% confidence={confidence}"
-        )
     except Exception as e:
         log.error(f"Order execution failed: {e}")
         await telegram.send_warning(f"⚠️ Order execution failed: {e}")
         return
+
+    # ── Step 9b: Broadcast formatted open position to Telegram ───────────
+    mode_tag   = "📄 PAPER" if config.paper_trading else "🔴 LIVE"
+    direction  = (decision.get("direction") or "long").upper()
+    market     = decision.get("market", "?")
+    entry      = trade_result.get("filled_price", 0)
+    size_usd   = decision.get("size_usd", 0)
+    size_pct   = decision.get("size_pct", 0)
+    stop_pct   = decision.get("stop_loss_pct", 2.0)
+    target_pct = decision.get("target_profit_pct", 0.5)
+    hold_min   = decision.get("expected_hold_minutes", 60)
+    reasoning  = decision.get("reasoning", "—")
+
+    stop_price   = entry * (1 - stop_pct / 100) if direction in ("LONG", "BUY") else entry * (1 + stop_pct / 100)
+    target_price = entry * (1 + target_pct / 100) if direction in ("LONG", "BUY") else entry * (1 - target_pct / 100)
+
+    await telegram.send_info(
+        f"📊 [{mode_tag}] FUTURES: {direction} - {market}\n"
+        f"─────────────────────\n"
+        f"📍 Open @${entry:.4f}\n"
+        f"🎯 Target: +{target_pct:.1f}% → ${target_price:.4f}\n"
+        f"🛑 Stop: -{stop_pct:.1f}% → ${stop_price:.4f}\n"
+        f"💰 Size: ${size_usd:.2f} ({size_pct:.1f}% of capital)\n"
+        f"🧠 Confidence: {confidence}/100\n"
+        f"⏱ Expected hold: {hold_min} min\n"
+        f"📋 {reasoning}\n"
+        f"📈 Positions open: {open_count + 1}/3"
+    )
+    log.info(
+        f"{mode_tag} Trade: {market} {direction} @{entry:.4f} "
+        f"size=${size_usd:.2f} conf={confidence}"
+    )
 
     metrics.update_claude_decision(decision.get("action", "buy"), confidence)
     # ── Step 10: Log outcome and update metrics ────────────────────────────

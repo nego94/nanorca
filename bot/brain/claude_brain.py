@@ -74,10 +74,26 @@ Your job: analyze the market data below and decide whether to trade.
   "size_pct": <float 0.0–5.0, % of capital>,
   "confidence": <integer 0–100>,
   "signals_used": ["signal_name_1", "signal_name_2"],
-  "reasoning": "<2–3 sentence explanation of why this trade makes sense>",
-  "expected_hold_minutes": <integer>,
-  "stop_loss_pct": <float, % below entry to auto-close>
-}}"""
+  "reasoning": "<2–3 sentence explanation of why this trade makes sense now>",
+  "expected_hold_minutes": <integer, expected futures hold time>,
+  "stop_loss_pct": <float, % loss to auto-close, typically 1.5–2.5>,
+  "target_profit_pct": <float, % gain target before closing, typically 0.3–1.5>,
+  "spot_suggestion": {{
+    "active": <true if you see a strong multi-week trend worth considering for manual spot buy, else false>,
+    "market": "<SYMBOL e.g. SOLUSDT>",
+    "direction": "long" | "short",
+    "confidence": <integer 0–100, must be >= 65 to be active>,
+    "hold_period": "<e.g. 2–4 weeks, 1–2 months>",
+    "reason": "<reason based on broader trend, NOT just today's signal>",
+    "target_date": "<estimated date or range e.g. 2026-06-15>"
+  }}
+}}
+
+SPOT SUGGESTION RULES:
+- Only set spot_suggestion.active=true if you genuinely see a multi-week trend backed by fundamentals/structure
+- Confidence must be >= 65 or set active=false
+- This is a SUGGESTION ONLY — it never executes automatically
+- The futures trade (action/market/direction above) and spot suggestion can be different coins"""
 
 
 class ClaudeBrain:

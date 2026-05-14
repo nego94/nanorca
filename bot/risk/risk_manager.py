@@ -19,7 +19,7 @@ from risk.trading_plan import TradingMode, get_plan_params, DrawdownRule
 log = logging.getLogger("nanorca.risk.manager")
 
 # Absolute hard limits — never overrideable by any plan or Claude
-MAX_OPEN_POSITIONS               = 5
+MAX_OPEN_POSITIONS               = 3   # strategy doc: max 3 parallel at <$10k capital
 MAX_SINGLE_EXCHANGE_EXPOSURE_PCT = 40
 BINANCE_MAX_LEVERAGE             = 3
 HYPERLIQUID_MAX_LEVERAGE         = 10
@@ -75,6 +75,7 @@ class RiskManager:
         self,
         decision: dict[str, Any],
         capital_tracker,
+        open_positions_count: int = 0,
     ) -> tuple[bool, str]:
         """
         Validate and size the trade.
@@ -86,6 +87,10 @@ class RiskManager:
         # Safety net — main.py should already block below 55
         if confidence < 55:
             return False, f"Confidence {confidence} < 55 (hard skip)"
+
+        # Parallel position cap — never exceed MAX_OPEN_POSITIONS simultaneously
+        if open_positions_count >= MAX_OPEN_POSITIONS:
+            return False, f"Max parallel positions reached ({open_positions_count}/{MAX_OPEN_POSITIONS})"
 
         action = decision.get("action")
         if action not in ("buy", "sell"):
