@@ -484,8 +484,10 @@ command: >
 
 ## 17. Next Immediate Actions
 
-1. **Set up VPS** (laptop can't run 24/7 for 14-day paper baseline)
-2. **Watch first paper trade** fire on Telegram (market needs to move > 0.30%)
-3. **Check Sunday learning report** — first auto-run next Sunday 00:00 UTC
-4. **Monitor daily** via `/report` command on Telegram
-5. **When win rate ≥ 60% over 14+ days** → flip `PAPER_TRADING=false`
+1. **Deploy latest code on VPS** — `git pull && docker compose build --no-cache executor bot && docker compose up -d`
+2. **Wait 24h** (user doing this 2026-05-14) — check if trades recorded: `/report` on Telegram + Grafana Trade History
+3. **If no trades** — `docker compose logs bot --since 24h | grep -E "Pre-filter|Claude|Trade"` to diagnose
+4. **Watch first paper trade** fire on Telegram (market needs to move > 0.30%)
+5. **Check Sunday learning report** — first auto-run 2026-05-18 00:00 UTC
+6. **Monitor daily** via `/report` on Telegram
+7. **When win rate ≥ 60% over 14+ days** → flip `PAPER_TRADING=false` in VPS `.env` and restart
