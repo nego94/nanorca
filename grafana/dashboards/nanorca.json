@@ -9,15 +9,15 @@
       {
         "name": "mode",
         "type": "custom",
-        "label": "Trading Mode",
+        "label": "Mode",
         "description": "Filter trade history by paper or live",
-        "query": "All trades,📄 Paper,🔴 Live",
+        "query": "all,paper,live",
         "options": [
-          {"selected": true,  "text": "All trades", "value": "1=1"},
-          {"selected": false, "text": "📄 Paper",    "value": "paper = true"},
-          {"selected": false, "text": "🔴 Live",     "value": "paper = false"}
+          {"selected": true,  "text": "All trades", "value": "all"},
+          {"selected": false, "text": "Paper",       "value": "paper"},
+          {"selected": false, "text": "Live",        "value": "live"}
         ],
-        "current": {"selected": true, "text": "All trades", "value": "1=1"},
+        "current": {"selected": true, "text": "All trades", "value": "all"},
         "hide": 0,
         "multi": false,
         "includeAll": false
@@ -192,7 +192,7 @@
     {"id":61,"title":"Recent Trades","type":"table",
      "gridPos":{"x":0,"y":42,"w":24,"h":10},
      "datasource":{"type":"postgres","uid":"nanorca-postgres"},
-     "targets":[{"refId":"A","rawSql":"SELECT\n  to_char(COALESCE(opened_at, created_at) AT TIME ZONE 'Asia/Makassar', 'YYYY-MM-DD HH24:MI') AS \"Opened (WIB)\",\n  to_char(closed_at AT TIME ZONE 'Asia/Makassar', 'HH24:MI') AS \"Closed\",\n  CASE WHEN paper THEN '📄 Paper' ELSE '🔴 Live' END AS \"Mode\",\n  market AS \"Market\",\n  UPPER(direction) AS \"Dir\",\n  ROUND(entry_price, 4) AS \"Entry\",\n  ROUND(exit_price, 4) AS \"Exit\",\n  ROUND(size_usd, 2) AS \"Size $\",\n  ROUND(pnl_usd, 4) AS \"P&L $\",\n  hold_minutes AS \"Hold (min)\",\n  confidence_score AS \"Conf\",\n  CASE WHEN win THEN '✅ Win' WHEN win IS FALSE THEN '❌ Loss' ELSE '🔄 Open' END AS \"Result\"\nFROM trades\nWHERE ${mode}\nORDER BY COALESCE(opened_at, created_at) DESC\nLIMIT 50","format":"table"}],
+     "targets":[{"refId":"A","rawSql":"SELECT\n  to_char(COALESCE(opened_at, created_at) AT TIME ZONE 'Asia/Makassar', 'YYYY-MM-DD HH24:MI') AS \"Opened (WIB)\",\n  to_char(closed_at AT TIME ZONE 'Asia/Makassar', 'HH24:MI') AS \"Closed\",\n  CASE WHEN paper THEN '📄 Paper' ELSE '🔴 Live' END AS \"Mode\",\n  market AS \"Market\",\n  UPPER(direction) AS \"Dir\",\n  ROUND(entry_price, 4) AS \"Entry\",\n  ROUND(exit_price, 4) AS \"Exit\",\n  ROUND(size_usd, 2) AS \"Size $\",\n  ROUND(pnl_usd, 4) AS \"P&L $\",\n  hold_minutes AS \"Hold (min)\",\n  confidence_score AS \"Conf\",\n  CASE WHEN win THEN '✅ Win' WHEN win IS FALSE THEN '❌ Loss' ELSE '🔄 Open' END AS \"Result\"\nFROM trades\nWHERE ('${mode}' = 'all' OR ('${mode}' = 'paper' AND paper = true) OR ('${mode}' = 'live' AND paper = false))\nORDER BY COALESCE(opened_at, created_at) DESC\nLIMIT 50","format":"table"}],
      "fieldConfig":{"overrides":[
        {"matcher":{"id":"byName","options":"P&L $"},"properties":[
          {"id":"custom.displayMode","value":"color-text"},
@@ -216,13 +216,13 @@
     {"id":63,"title":"Win / Loss Count","type":"piechart",
      "gridPos":{"x":16,"y":52,"w":8,"h":7},
      "datasource":{"type":"postgres","uid":"nanorca-postgres"},
-     "targets":[{"refId":"A","rawSql":"SELECT\n  CASE WHEN win THEN 'Win ✅' ELSE 'Loss ❌' END AS label,\n  COUNT(*) AS count\nFROM trades\nWHERE status = 'closed' AND win IS NOT NULL AND ${mode}\nGROUP BY win","format":"table"}],
+     "targets":[{"refId":"A","rawSql":"SELECT\n  CASE WHEN win THEN 'Win ✅' ELSE 'Loss ❌' END AS label,\n  COUNT(*) AS count\nFROM trades\nWHERE status = 'closed' AND win IS NOT NULL AND ('${mode}' = 'all' OR ('${mode}' = 'paper' AND paper = true) OR ('${mode}' = 'live' AND paper = false))\nGROUP BY win","format":"table"}],
      "fieldConfig":{"defaults":{"color":{"mode":"palette-classic"}}}},
 
     {"id":64,"title":"P&L by Market (all time)","type":"barchart",
      "gridPos":{"x":0,"y":59,"w":12,"h":7},
      "datasource":{"type":"postgres","uid":"nanorca-postgres"},
-     "targets":[{"refId":"A","rawSql":"SELECT\n  market AS \"Market\",\n  ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L\"\nFROM trades\nWHERE status = 'closed' AND ${mode}\nGROUP BY market\nORDER BY SUM(COALESCE(pnl_usd,0)) DESC\nLIMIT 15","format":"table"}],
+     "targets":[{"refId":"A","rawSql":"SELECT\n  market AS \"Market\",\n  ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L\"\nFROM trades\nWHERE status = 'closed' AND ('${mode}' = 'all' OR ('${mode}' = 'paper' AND paper = true) OR ('${mode}' = 'live' AND paper = false))\nGROUP BY market\nORDER BY SUM(COALESCE(pnl_usd,0)) DESC\nLIMIT 15","format":"table"}],
      "fieldConfig":{"defaults":{"unit":"currencyUSD"}}},
 
     {"id":65,"title":"📄 Paper Stats","type":"stat",
