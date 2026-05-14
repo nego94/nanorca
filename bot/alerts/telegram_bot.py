@@ -222,10 +222,24 @@ class TelegramBot:
 
     async def _cmd_report(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update): await self._deny(update); return
-        args = ctx.args or []
-        period = "7d" if args and args[0] == "7d" else "24h"
         from datetime import datetime, timezone, timedelta
-        since = datetime.now(timezone.utc) - (timedelta(days=7) if period == "7d" else timedelta(hours=24))
+
+        args = ctx.args or []
+        arg = args[0].lower() if args else ""
+
+        if arg == "24h":
+            period_label = "last 24h"
+            since = datetime.now(timezone.utc) - timedelta(hours=24)
+        elif arg == "7d":
+            period_label = "last 7 days"
+            since = datetime.now(timezone.utc) - timedelta(days=7)
+        elif arg == "30d":
+            period_label = "last 30 days"
+            since = datetime.now(timezone.utc) - timedelta(days=30)
+        else:
+            period_label = "all time"
+            since = datetime(2020, 1, 1, tzinfo=timezone.utc)   # captures everything
+
         trades = await self._db.get_trades_in_range(since)
 
         def _section(label: str, rows: list) -> str:
@@ -233,25 +247,33 @@ class TelegramBot:
             open_  = [t for t in rows if t.get("status") == "open"]
             wins   = sum(1 for t in closed if t.get("win"))
             losses = len(closed) - wins
-            pnl    = sum(t.get("pnl_usd", 0) or 0 for t in closed)
-            wr     = round(wins / len(closed) * 100, 1) if closed else 0
+            pnl    = float(sum(t.get("pnl_usd") or 0 for t in closed))
+            fees   = float(sum(t.get("fees_usd") or 0 for t in closed))
+            wr     = round(wins / len(closed) * 100, 1) if closed else 0.0
+            avg_win  = float(sum((t.get("pnl_usd") or 0) for t in closed if t.get("win"))) / wins if wins else 0
+            avg_loss = float(sum((t.get("pnl_usd") or 0) for t in closed if not t.get("win"))) / losses if losses else 0
             return (
                 f"*{label}*\n"
-                f"Total: {len(rows)} | Open: {len(open_)} | Closed: {len(closed)}\n"
-                f"Win rate: `{wr}%` ({wins}W / {losses}L)\n"
-                f"P&L: `${pnl:+.4f}`"
+                f"Total: {len(rows)} | Closed: {len(closed)} | Open: {len(open_)}\n"
+                f"Win rate: `{wr:.1f}%` ({wins}W / {losses}L)\n"
+                f"P&L: `${pnl:+.2f}` (fees: `${fees:.2f}`)\n"
+                f"Avg win: `${avg_win:+.2f}` | Avg loss: `${avg_loss:+.2f}`"
             )
 
         paper_trades = [t for t in trades if t.get("paper")]
         live_trades  = [t for t in trades if not t.get("paper")]
 
-        msg = f"📊 *Report — last {period}*\n━━━━━━━━━━━━━━━━━━━━━\n"
+        msg = (
+            f"📊 *Report — {period_label}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+        )
         msg += _section("📄 Paper Trading", paper_trades)
         if live_trades:
             msg += f"\n\n{'━' * 21}\n"
             msg += _section("🔴 Live Trading", live_trades)
         else:
             msg += "\n\n_No live trades in this period._"
+        msg += "\n\n_Usage: /report | /report 24h | /report 7d | /report 30d_"
 
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
@@ -365,18 +387,26 @@ class TelegramBot:
 
     async def _cmd_history(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update): await self._deny(update); return
-        n = int(ctx.args[0]) if ctx.args else 10
-        n = min(n, 50)  # cap at 50
+        n = int(ctx.args[0]) if ctx.args else 20
+        n = min(n, 100)
         trades = await self._db.get_recent_trades(limit=n)
         if not trades:
             await update.message.reply_text("No trades yet."); return
         lines = []
         for t in trades[:n]:
-            emoji = "✅" if t.get("win") else "❌" if t.get("win") is False else "🔄"
-            pnl_str = f"${t.get('pnl_usd', 0):+.2f}" if t.get("pnl_usd") is not None else "open"
-            lines.append(f"{emoji} {t['exchange']} {t['market']} → {pnl_str}")
+            emoji   = "✅" if t.get("win") else "❌" if t.get("win") is False else "🔄"
+            status  = t.get("status", "open")
+            if status == "open":
+                pnl_str = "open"
+            else:
+                pnl_val = float(t.get("pnl_usd") or 0)
+                pnl_str = f"${pnl_val:+.2f}"
+            market  = t.get("market", "?")
+            paper   = "📄" if t.get("paper") else "🔴"
+            lines.append(f"{emoji} {paper} {market} → {pnl_str}")
         await update.message.reply_text(
-            f"📜 Last {len(lines)} trades:\n" + "\n".join(lines)
+            f"📜 Last {len(lines)} trades:\n" + "\n".join(lines) +
+            f"\n\n_/history N to show more (max 100)_"
         )
 
     async def _cmd_learning(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
