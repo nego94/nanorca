@@ -349,6 +349,7 @@ Every Sunday during weekly learning:
 | BTC excluded from trading | BTCUSDT min lot ~$100, too big for $11 capital | Resolved: prompt tells Claude to avoid BTC |
 | CMC/news signals not connected | Missing trend intelligence | Phase 3 — CMC_API_KEY exists in .env |
 | Proto generation was incomplete | executor Dockerfile only generated pb.go not grpc.pb.go → `UnimplementedExecutorServiceServer` undefined | Fixed: now installs protoc-gen-go-grpc and generates both files |
+| /check TOKEN not implemented | User couldn't add custom coins to scan | Fixed: ExtraMarketsStore + /check /listpriority /removepriority commands; scanner unions user list with top-25 |
 | Open trades stuck in DB after restart | exchange_order_id not saved to DB; _open_trades dict lost on restart → trades never closed → win rate never builds | Fixed: exchange_order_id persisted to DB; recover_from_db() on startup expires stale (>4h) trades and reloads recent ones |
 | Fear & Greed Index not connected | Missing macro sentiment signal | Phase 3 |
 | Weekly learning not run yet | Signal weights still at defaults | Will auto-run next Sunday 00:00 UTC |
