@@ -2,8 +2,28 @@
   "title": "NANORCA Trading Dashboard",
   "uid": "nanorca-main",
   "schemaVersion": 38,
-  "version": 3,
-  "refresh": "15s",
+  "version": 4,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "mode",
+        "type": "custom",
+        "label": "Trading Mode",
+        "description": "Filter trade history by paper or live",
+        "query": "All trades,📄 Paper,🔴 Live",
+        "options": [
+          {"selected": true,  "text": "All trades", "value": "1=1"},
+          {"selected": false, "text": "📄 Paper",    "value": "paper = true"},
+          {"selected": false, "text": "🔴 Live",     "value": "paper = false"}
+        ],
+        "current": {"selected": true, "text": "All trades", "value": "1=1"},
+        "hide": 0,
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  },
   "panels": [
 
     {"id":1,"title":"Bot State","type":"stat","gridPos":{"x":0,"y":0,"w":4,"h":3},
@@ -172,7 +192,7 @@
     {"id":61,"title":"Recent Trades","type":"table",
      "gridPos":{"x":0,"y":42,"w":24,"h":10},
      "datasource":{"type":"postgres","uid":"nanorca-postgres"},
-     "targets":[{"refId":"A","rawSql":"SELECT\n  to_char(created_at AT TIME ZONE 'Asia/Makassar', 'YYYY-MM-DD HH24:MI') AS \"Time (WIB)\",\n  UPPER(exchange) AS \"Exchange\",\n  market AS \"Market\",\n  UPPER(direction) AS \"Dir\",\n  ROUND(entry_price, 4) AS \"Entry\",\n  ROUND(exit_price, 4) AS \"Exit\",\n  ROUND(size_usd, 2) AS \"Size $\",\n  ROUND(pnl_usd, 4) AS \"P&L $\",\n  hold_minutes AS \"Hold (min)\",\n  confidence_score AS \"Confidence\",\n  CASE WHEN win THEN '✅ Win' WHEN win IS FALSE THEN '❌ Loss' ELSE '🔄 Open' END AS \"Result\",\n  CASE WHEN paper THEN '📄 Paper' ELSE '🔴 Live' END AS \"Mode\"\nFROM trades\nORDER BY created_at DESC\nLIMIT 50","format":"table"}],
+     "targets":[{"refId":"A","rawSql":"SELECT\n  to_char(COALESCE(opened_at, created_at) AT TIME ZONE 'Asia/Makassar', 'YYYY-MM-DD HH24:MI') AS \"Opened (WIB)\",\n  to_char(closed_at AT TIME ZONE 'Asia/Makassar', 'HH24:MI') AS \"Closed\",\n  CASE WHEN paper THEN '📄 Paper' ELSE '🔴 Live' END AS \"Mode\",\n  market AS \"Market\",\n  UPPER(direction) AS \"Dir\",\n  ROUND(entry_price, 4) AS \"Entry\",\n  ROUND(exit_price, 4) AS \"Exit\",\n  ROUND(size_usd, 2) AS \"Size $\",\n  ROUND(pnl_usd, 4) AS \"P&L $\",\n  hold_minutes AS \"Hold (min)\",\n  confidence_score AS \"Conf\",\n  CASE WHEN win THEN '✅ Win' WHEN win IS FALSE THEN '❌ Loss' ELSE '🔄 Open' END AS \"Result\"\nFROM trades\nWHERE ${mode}\nORDER BY COALESCE(opened_at, created_at) DESC\nLIMIT 50","format":"table"}],
      "fieldConfig":{"overrides":[
        {"matcher":{"id":"byName","options":"P&L $"},"properties":[
          {"id":"custom.displayMode","value":"color-text"},
@@ -187,31 +207,47 @@
     {"id":62,"title":"Cumulative P&L Over Time","type":"timeseries",
      "gridPos":{"x":0,"y":52,"w":16,"h":7},
      "datasource":{"type":"postgres","uid":"nanorca-postgres"},
-     "targets":[{"refId":"A","rawSql":"SELECT\n  closed_at AS time,\n  SUM(COALESCE(pnl_usd,0)) OVER (ORDER BY closed_at ROWS UNBOUNDED PRECEDING) AS \"Cumulative P&L\"\nFROM trades\nWHERE status = 'closed' AND closed_at IS NOT NULL\nORDER BY closed_at","format":"time_series"}],
-     "fieldConfig":{"defaults":{"unit":"currencyUSD","custom":{"lineWidth":2,"fillOpacity":10},"color":{"mode":"fixed","fixedColor":"green"}}}},
+     "targets":[
+       {"refId":"A","rawSql":"SELECT\n  closed_at AS time,\n  SUM(COALESCE(pnl_usd,0)) OVER (ORDER BY closed_at ROWS UNBOUNDED PRECEDING) AS \"📄 Paper P&L\"\nFROM trades\nWHERE status = 'closed' AND closed_at IS NOT NULL AND paper = true\nORDER BY closed_at","format":"time_series"},
+       {"refId":"B","rawSql":"SELECT\n  closed_at AS time,\n  SUM(COALESCE(pnl_usd,0)) OVER (ORDER BY closed_at ROWS UNBOUNDED PRECEDING) AS \"🔴 Live P&L\"\nFROM trades\nWHERE status = 'closed' AND closed_at IS NOT NULL AND paper = false\nORDER BY closed_at","format":"time_series"}
+     ],
+     "fieldConfig":{"defaults":{"unit":"currencyUSD","custom":{"lineWidth":2,"fillOpacity":10}}}},
 
     {"id":63,"title":"Win / Loss Count","type":"piechart",
      "gridPos":{"x":16,"y":52,"w":8,"h":7},
      "datasource":{"type":"postgres","uid":"nanorca-postgres"},
-     "targets":[{"refId":"A","rawSql":"SELECT\n  CASE WHEN win THEN 'Win ✅' ELSE 'Loss ❌' END AS label,\n  COUNT(*) AS count\nFROM trades\nWHERE status = 'closed' AND win IS NOT NULL\nGROUP BY win","format":"table"}],
+     "targets":[{"refId":"A","rawSql":"SELECT\n  CASE WHEN win THEN 'Win ✅' ELSE 'Loss ❌' END AS label,\n  COUNT(*) AS count\nFROM trades\nWHERE status = 'closed' AND win IS NOT NULL AND ${mode}\nGROUP BY win","format":"table"}],
      "fieldConfig":{"defaults":{"color":{"mode":"palette-classic"}}}},
 
     {"id":64,"title":"P&L by Market (all time)","type":"barchart",
      "gridPos":{"x":0,"y":59,"w":12,"h":7},
      "datasource":{"type":"postgres","uid":"nanorca-postgres"},
-     "targets":[{"refId":"A","rawSql":"SELECT\n  market AS \"Market\",\n  ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L\"\nFROM trades\nWHERE status = 'closed'\nGROUP BY market\nORDER BY SUM(COALESCE(pnl_usd,0)) DESC\nLIMIT 15","format":"table"}],
+     "targets":[{"refId":"A","rawSql":"SELECT\n  market AS \"Market\",\n  ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L\"\nFROM trades\nWHERE status = 'closed' AND ${mode}\nGROUP BY market\nORDER BY SUM(COALESCE(pnl_usd,0)) DESC\nLIMIT 15","format":"table"}],
      "fieldConfig":{"defaults":{"unit":"currencyUSD"}}},
 
-    {"id":65,"title":"Stats (closed trades)","type":"stat",
+    {"id":65,"title":"📄 Paper Stats","type":"stat",
+     "gridPos":{"x":0,"y":59,"w":12,"h":7},
+     "datasource":{"type":"postgres","uid":"nanorca-postgres"},
+     "targets":[
+       {"refId":"A","rawSql":"SELECT COUNT(*) AS \"Closed Trades\" FROM trades WHERE status='closed' AND paper=true","format":"table"},
+       {"refId":"B","rawSql":"SELECT ROUND(AVG(CASE WHEN win THEN 1.0 ELSE 0.0 END)*100,1) AS \"Win Rate %\" FROM trades WHERE status='closed' AND paper=true AND win IS NOT NULL","format":"table"},
+       {"refId":"C","rawSql":"SELECT ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L $\" FROM trades WHERE status='closed' AND paper=true","format":"table"},
+       {"refId":"D","rawSql":"SELECT ROUND(AVG(hold_minutes),1) AS \"Avg Hold (min)\" FROM trades WHERE status='closed' AND paper=true AND hold_minutes IS NOT NULL","format":"table"}
+     ],
+     "options":{"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background"},
+     "fieldConfig":{"defaults":{"color":{"mode":"thresholds"},"thresholds":{"steps":[{"value":null,"color":"blue"}]}}}},
+
+    {"id":66,"title":"🔴 Live Stats","type":"stat",
      "gridPos":{"x":12,"y":59,"w":12,"h":7},
      "datasource":{"type":"postgres","uid":"nanorca-postgres"},
      "targets":[
-       {"refId":"A","rawSql":"SELECT COUNT(*) AS \"Total Trades\" FROM trades WHERE status='closed'","format":"table"},
-       {"refId":"B","rawSql":"SELECT ROUND(AVG(CASE WHEN win THEN 1.0 ELSE 0.0 END)*100,1) AS \"Win Rate %\" FROM trades WHERE status='closed' AND win IS NOT NULL","format":"table"},
-       {"refId":"C","rawSql":"SELECT ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L $\" FROM trades WHERE status='closed'","format":"table"},
-       {"refId":"D","rawSql":"SELECT ROUND(AVG(hold_minutes),1) AS \"Avg Hold (min)\" FROM trades WHERE status='closed' AND hold_minutes IS NOT NULL","format":"table"}
+       {"refId":"A","rawSql":"SELECT COUNT(*) AS \"Closed Trades\" FROM trades WHERE status='closed' AND paper=false","format":"table"},
+       {"refId":"B","rawSql":"SELECT ROUND(AVG(CASE WHEN win THEN 1.0 ELSE 0.0 END)*100,1) AS \"Win Rate %\" FROM trades WHERE status='closed' AND paper=false AND win IS NOT NULL","format":"table"},
+       {"refId":"C","rawSql":"SELECT ROUND(SUM(COALESCE(pnl_usd,0)),4) AS \"Total P&L $\" FROM trades WHERE status='closed' AND paper=false","format":"table"},
+       {"refId":"D","rawSql":"SELECT ROUND(AVG(hold_minutes),1) AS \"Avg Hold (min)\" FROM trades WHERE status='closed' AND paper=false AND hold_minutes IS NOT NULL","format":"table"}
      ],
-     "options":{"reduceOptions":{"calcs":["lastNotNull"]}}},
+     "options":{"reduceOptions":{"calcs":["lastNotNull"]},"colorMode":"background"},
+     "fieldConfig":{"defaults":{"color":{"mode":"thresholds"},"thresholds":{"steps":[{"value":null,"color":"red"}]}}}},
 
     {"id":700,"title":"── CAPITAL BUCKETS ──","type":"text",
      "gridPos":{"x":0,"y":66,"w":24,"h":1},
