@@ -133,7 +133,13 @@ async def _process_paper_fills(
                 },
             )
         except Exception as e:
-            log.error(f"Failed to save paper fill to DB: {e}")
+            log.error(f"CRITICAL: paper fill not saved to DB — {e}")
+            await telegram.send_warning(
+                f"⚠️ Paper trade filled but NOT saved to DB!\n"
+                f"Market: {order.market} {order.direction.upper()}\n"
+                f"Error: {e}\n"
+                f"This trade will NOT appear in /report or Grafana."
+            )
 
         await telegram.send_info(
             f"✅ [PAPER] FILLED: {order.direction.upper()} {order.market}\n"
@@ -470,6 +476,18 @@ async def main_loop(
         return
 
     # ── Step 8: Risk manager approval ─────────────────────────────────────
+    # Guard: reject coins that only exist on Binance spot (no futures contract).
+    # These can appear in Claude's decision if the scanner returned spot price data.
+    _NO_FUTURES = {
+        "OSMO", "ATOM", "KAVA", "CELO", "BAND", "ALPHA", "HARD",
+        "SXP", "DOCK", "DREP", "FIO", "IDEX", "LIT", "MDX",
+    }
+    market_pre = decision.get("market", "").replace("USDT", "").upper()
+    if market_pre in _NO_FUTURES:
+        log.info(f"Skipping {decision.get('market')} — spot-only coin, no futures contract")
+        metrics.record_skip()
+        return
+
     # Paper: use PaperOrderBook count. Live: query Go executor.
     if config.paper_trading and paper_order_book is not None:
         open_count = paper_order_book.count_active()
