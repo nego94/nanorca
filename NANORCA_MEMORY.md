@@ -474,7 +474,8 @@ command: >
 | 2026-05-14 | ✅ VPS FULLY OPERATIONAL — bot running 24/7 on Hostinger KVM2 | — |
 | 2026-05-14 | Domain setup: nanorca.creativorium.com → Grafana via Nginx Proxy Manager + Let's Encrypt SSL | VPS /root/proxy/ |
 | 2026-05-14 | Scan interval: 60s → 30s (better momentum signal quality, ~$1.16/month API vs $0.58) | .env SCAN_INTERVAL_SECONDS |
-| 2026-05-14 | Fix: Grafana Prometheus panels showing 0 — added explicit uid nanorca-prometheus to datasource + all panel targets | prometheus.yml, nanorca.json |
+| 2026-05-14 | Fix: Grafana 11 breaks on uid field in prometheus.yml and timescaledb:true in postgres.yml — both removed | prometheus.yml, postgres.yml, nanorca.json |
+| 2026-05-14 | Grafana datasource note: Prometheus uses isDefault:true (no uid needed). PostgreSQL uses uid:nanorca-postgres. timescaledb option removed (Grafana 11 deprecated it) | — |
 
 ---
 
