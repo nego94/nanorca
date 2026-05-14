@@ -87,13 +87,22 @@ class OutcomeLogger:
         log.info(f"Trade opened: db_id={trade_id}, order={order_id}")
 
     async def log_trade_closed(self, order_id: str, exit_price: float, pnl: float, fees: float) -> None:
-        """Update the trade record when a position is closed."""
+        """
+        Update the trade record when a position is closed.
+
+        Primary path: look up trade_id from in-memory _open_trades dict.
+        Fallback path: if not found (e.g. bot restarted between fill and close),
+        update DB directly by exchange_order_id. This prevents trades from
+        staying stuck as 'open' in DB after a bot restart.
+        """
         trade_id = self._open_trades.pop(order_id, None)
-        if not trade_id:
-            log.warning(f"log_trade_closed: unknown order_id {order_id}")
-            return
-        try:
+        if trade_id:
             await self._db.close_trade(trade_id, exit_price, pnl, fees)
             log.info(f"Trade closed: db_id={trade_id}, pnl=${pnl:.2f}")
-        except Exception as e:
-            log.error(f"Failed to log trade close: {e}")
+        else:
+            # Fallback: close by order_id directly in DB
+            found = await self._db.close_trade_by_order_id(order_id, exit_price, pnl, fees)
+            if found:
+                log.info(f"Trade closed via fallback order_id lookup: {order_id}, pnl=${pnl:.2f}")
+            else:
+                log.warning(f"log_trade_closed: order_id {order_id} not found in memory or DB")

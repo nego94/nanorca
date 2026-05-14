@@ -138,6 +138,30 @@ class Database:
             trade_id, exit_price, pnl, fees,
         )
 
+    async def close_trade_by_order_id(self, order_id: str, exit_price: float, pnl: float, fees: float) -> bool:
+        """
+        Fallback: close a trade by exchange_order_id when the in-memory trade_id is unknown.
+        Used when _open_trades was cleared (e.g. bot restart between fill and close).
+        Returns True if a matching open trade was found and closed.
+        """
+        row = await self._fetchrow(
+            """
+            UPDATE trades SET
+                exit_price = $2,
+                pnl_usd = $3,
+                fees_usd = $4,
+                status = 'closed',
+                closed_at = NOW(),
+                hold_minutes = EXTRACT(EPOCH FROM (NOW() - opened_at)) / 60,
+                outcome = CASE WHEN $3 > 0 THEN 'win' WHEN $3 < 0 THEN 'loss' ELSE 'breakeven' END,
+                win = ($3 > 0)
+            WHERE exchange_order_id = $1 AND status = 'open'
+            RETURNING id
+            """,
+            order_id, exit_price, pnl, fees,
+        )
+        return row is not None
+
     async def get_recent_trades(self, limit: int = 10) -> list[dict]:
         rows = await self._fetch(
             "SELECT * FROM trades ORDER BY created_at DESC LIMIT $1", limit
