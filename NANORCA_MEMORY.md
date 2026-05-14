@@ -11,7 +11,7 @@ NANORCA is an autonomous crypto trading bot built with:
 - **Python AI brain** — Claude Haiku or claude sonet when needed makes trading decisions
 - **Go executor** — fast exchange I/O, WebSocket feeds, order execution
 - **PostgreSQL + TimescaleDB** — trade history, signal weights, learning data
-- **Prometheus + Grafana** — real-time dashboard (localhost:3000 or VPS_IP:3000)
+- **Prometheus + Grafana** — real-time dashboard at `https://nanorca.creativorium.com`
 - **Telegram bot** — trade alerts + command interface
 
 **Architecture:** Python ↔ gRPC ↔ Go ↔ Binance/Hyperliquid/Polymarket
@@ -418,7 +418,8 @@ cd nanorca
 sudo ufw allow 22 && sudo ufw allow 3000 && sudo ufw enable
 docker compose up -d
 
-# Access Grafana: http://VPS_IP:3000
+# Access Grafana: https://nanorca.creativorium.com (or http://72.62.124.23:3000 direct)
+# NPM admin: http://72.62.124.23:81
 ```
 
 **PostgreSQL tuning for 2GB RAM** (add to docker-compose.yml postgres service):
@@ -470,6 +471,7 @@ command: >
 | 2026-05-14 | Fix: executor Dockerfile now generates both nanorca.pb.go AND nanorca_grpc.pb.go | executor/Dockerfile |
 | 2026-05-14 | Fix: VPS logs dir permission — mkdir -p logs && chmod 777 on host | VPS manual step |
 | 2026-05-14 | ✅ VPS FULLY OPERATIONAL — bot running 24/7 on Hostinger KVM2 | — |
+| 2026-05-14 | Domain setup: nanorca.creativorium.com → Grafana via Nginx Proxy Manager + Let's Encrypt SSL | VPS /root/proxy/ |
 
 ---
 
