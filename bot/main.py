@@ -170,10 +170,18 @@ async def _process_paper_exits(
         pnl_pct = order.pnl_pct_from_entry(exit_price)
         win = pnl_usd >= 0
 
+        db_ok = True
         try:
             await outcome_logger.log_trade_closed(order.order_id, exit_price, pnl_usd, fees_usd)
         except Exception as e:
-            log.error(f"Failed to log paper close to DB: {e}")
+            db_ok = False
+            log.error(f"DB close FAILED for {order.market} {order.order_id}: {e}")
+            await telegram.send_warning(
+                f"⚠️ DB CLOSE ERROR — trade NOT saved!\n"
+                f"Market: {order.market} | order_id: {order.order_id}\n"
+                f"P&L: ${pnl_usd:+.4f} | Error: {e}\n"
+                f"Capital still updated. Fix DB manually or restart bot."
+            )
 
         await capital_tracker.update_from_trade({"pnl_usd": pnl_usd, "fees_usd": fees_usd})
 
@@ -187,8 +195,9 @@ async def _process_paper_exits(
                 result_emoji = "⏰ TIMEOUT (profit)"
 
         fill = order.fill_price or order.entry_price
+        db_tag = "" if db_ok else " ⚠️ DB ERR"
         await telegram.send_info(
-            f"{result_emoji} [PAPER] {order.direction.upper()} {order.market} CLOSED\n"
+            f"{result_emoji} [PAPER]{db_tag} {order.direction.upper()} {order.market} CLOSED\n"
             f"─────────────────────\n"
             f"📍 Entry: `${fill:.4f}` → Exit: `${exit_price:.4f}`\n"
             f"💰 P&L: `${pnl_usd:+.4f}` ({pnl_pct:+.2f}% on notional)\n"

@@ -6,6 +6,11 @@ Position persistence across restarts:
   On startup, recover_from_db() reloads the open trade map from DB.
   Stale open trades (> max_hold_minutes) are auto-expired with 0 P&L.
   This ensures no open trade is permanently stuck in DB after a restart.
+
+Close path priority:
+  1. close_trade_by_order_id() — always reliable, uses exchange_order_id (always known)
+  2. close_trade(trade_id)     — fallback via PK if order_id lookup fails (e.g. empty order_id)
+  This order ensures no double-close and no dependency on in-memory state.
 """
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ class OutcomeLogger:
 
     def __init__(self, db) -> None:
         self._db = db
-        # In-memory map: exchange_order_id → DB trade_id
+        # In-memory map: exchange_order_id → DB trade_id (used as PK fallback only)
         self._open_trades: dict[str, int] = {}
 
     async def recover_from_db(self, max_hold_minutes: int = 240) -> None:
@@ -30,7 +35,7 @@ class OutcomeLogger:
 
         Trades older than max_hold_minutes are expired immediately with 0 P&L
         (they would have been auto-closed by the hold-time rule anyway).
-        Recent trades are loaded into _open_trades so the close path works correctly.
+        Recent trades are loaded into _open_trades so the PK fallback works.
         """
         open_trades = await self._db.get_open_trades()
         if not open_trades:
@@ -56,7 +61,7 @@ class OutcomeLogger:
                 )
                 expired += 1
             else:
-                # Recent trade — recover mapping so log_trade_closed() works
+                # Recent trade — recover PK mapping as fallback
                 order_id = trade.get("exchange_order_id", "")
                 if order_id:
                     self._open_trades[order_id] = trade["id"]
@@ -68,8 +73,19 @@ class OutcomeLogger:
         )
 
     async def log_trade_opened(self, decision: dict[str, Any], result: dict[str, Any]) -> None:
-        """Record a newly opened trade in the DB (including exchange_order_id)."""
+        """
+        Record a newly opened trade in DB.
+
+        Duplicate guard: if this order_id is already in _open_trades (e.g. fill
+        detected twice in same cycle), skip the DB insert to avoid duplicates.
+        """
         order_id = result.get("exchange_order_id", "")
+
+        # Duplicate guard
+        if order_id and order_id in self._open_trades:
+            log.warning(f"log_trade_opened: {order_id} already recorded — skipping duplicate insert")
+            return
+
         trade = {
             "exchange":          decision.get("exchange") or "binance",
             "market":            decision.get("market", "UNKNOWN"),
@@ -83,26 +99,42 @@ class OutcomeLogger:
             "exchange_order_id": order_id,
         }
         trade_id = await self._db.save_trade(trade)
-        self._open_trades[order_id] = trade_id
+        if order_id:
+            self._open_trades[order_id] = trade_id
         log.info(f"Trade opened: db_id={trade_id}, order={order_id}")
 
     async def log_trade_closed(self, order_id: str, exit_price: float, pnl: float, fees: float) -> None:
         """
         Update the trade record when a position is closed.
 
-        Primary path: look up trade_id from in-memory _open_trades dict.
-        Fallback path: if not found (e.g. bot restarted between fill and close),
-        update DB directly by exchange_order_id. This prevents trades from
-        staying stuck as 'open' in DB after a bot restart.
+        Close priority:
+          1. close_trade_by_order_id() — primary, uses exchange_order_id stored in DB.
+             Works after restarts, never depends on in-memory state.
+          2. close_trade(trade_id)     — fallback via DB primary key, for trades where
+             exchange_order_id is empty or lookup fails.
+
+        Raises RuntimeError if neither path succeeds (triggers Telegram alert in caller).
         """
-        trade_id = self._open_trades.pop(order_id, None)
-        if trade_id:
-            await self._db.close_trade(trade_id, exit_price, pnl, fees)
-            log.info(f"Trade closed: db_id={trade_id}, pnl=${pnl:.2f}")
-        else:
-            # Fallback: close by order_id directly in DB
+        # Primary: always try by exchange_order_id first — most reliable
+        if order_id:
             found = await self._db.close_trade_by_order_id(order_id, exit_price, pnl, fees)
             if found:
-                log.info(f"Trade closed via fallback order_id lookup: {order_id}, pnl=${pnl:.2f}")
-            else:
-                log.warning(f"log_trade_closed: order_id {order_id} not found in memory or DB")
+                self._open_trades.pop(order_id, None)
+                log.info(f"Trade closed: order={order_id}, pnl=${pnl:.2f}")
+                return
+
+        # Fallback: close by DB primary key (when order_id is empty or not in DB)
+        trade_id = self._open_trades.pop(order_id, None)
+        if trade_id:
+            try:
+                await self._db.close_trade(trade_id, exit_price, pnl, fees)
+                log.info(f"Trade closed via PK fallback: db_id={trade_id}, pnl=${pnl:.2f}")
+                return
+            except Exception as e:
+                log.error(f"close_trade by PK id={trade_id} also failed: {e}")
+
+        log.error(f"log_trade_closed FAILED: order_id={order_id!r} not found in DB or memory")
+        raise RuntimeError(
+            f"DB close failed for order_id={order_id!r}: "
+            f"exit={exit_price:.6f}, pnl={pnl:.6f}"
+        )

@@ -92,10 +92,18 @@ class PaperOrderBook:
       2. check_exits()  — move open → closed when target/stop/timeout
     """
 
-    def __init__(self, max_hold_minutes: int = 240, max_pending: int = 3) -> None:
+    def __init__(
+        self,
+        max_hold_minutes: int = 240,
+        max_pending: int = 3,
+        cooldown_minutes: float = 15.0,
+    ) -> None:
         self._orders: dict[str, PaperOrder] = {}
         self._max_hold_minutes = max_hold_minutes
         self._max_pending = max_pending
+        self._cooldown_seconds = cooldown_minutes * 60
+        # market → monotonic time when cooldown expires
+        self._cooldowns: dict[str, float] = {}
 
     # ── Adding orders ──────────────────────────────────────────────────────
 
@@ -119,6 +127,13 @@ class PaperOrderBook:
         )
         if existing:
             log.info(f"Paper book: already have {existing.status} order for {market} — skipping duplicate")
+            return None
+
+        # Block re-entry during cooldown after a recent close
+        cooldown_until = self._cooldowns.get(market, 0)
+        if time.monotonic() < cooldown_until:
+            remaining = (cooldown_until - time.monotonic()) / 60
+            log.info(f"Paper book: {market} in cooldown ({remaining:.0f}m remaining) — skipping")
             return None
 
         direction  = (decision.get("direction") or "long").lower()
@@ -233,9 +248,12 @@ class PaperOrderBook:
 
             order.status = "closed"
             exits.append((order, reason, current))
+            # Start cooldown to prevent immediate re-entry on the same market
+            self._cooldowns[order.market] = time.monotonic() + self._cooldown_seconds
             log.info(
                 f"Paper CLOSED: {order.market} {order.direction.upper()} "
-                f"reason={reason} exit=${current:.4f} hold={order.hold_minutes:.0f}m"
+                f"reason={reason} exit=${current:.4f} hold={order.hold_minutes:.0f}m "
+                f"(cooldown {self._cooldown_seconds/60:.0f}m)"
             )
         return exits
 
@@ -275,6 +293,9 @@ class PaperOrderBook:
     def purge_closed(self) -> None:
         """Remove closed orders from memory (call after DB logging)."""
         self._orders = {oid: o for oid, o in self._orders.items() if o.status != "closed"}
+        # Clean up expired cooldowns
+        now = time.monotonic()
+        self._cooldowns = {m: t for m, t in self._cooldowns.items() if t > now}
 
     def format_telegram(self) -> str:
         """Format all active orders for /positions command."""

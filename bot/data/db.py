@@ -74,7 +74,24 @@ class Database:
     # ── Trades ─────────────────────────────────────────────────────────────
 
     async def save_trade(self, trade: dict[str, Any]) -> int:
-        """Insert a new trade record. Returns the new trade ID."""
+        """
+        Insert a new trade record. Returns the new trade ID.
+
+        If a trade with the same exchange_order_id already exists (duplicate fill
+        detected at DB level), return the existing ID instead of inserting again.
+        """
+        order_id = trade.get("exchange_order_id", "")
+
+        # Check for existing record with this order_id to prevent duplicates
+        if order_id:
+            existing = await self._fetchrow(
+                "SELECT id FROM trades WHERE exchange_order_id = $1 LIMIT 1",
+                order_id,
+            )
+            if existing:
+                log.warning(f"save_trade: order_id {order_id!r} already in DB (id={existing['id']}) — skipping insert")
+                return existing["id"]
+
         row = await self._fetchrow(
             """
             INSERT INTO trades (
@@ -88,7 +105,7 @@ class Database:
             trade.get("entry_price"), trade.get("size_usd"),
             trade.get("confidence_score"), trade.get("signal_mix", {}),
             trade.get("claude_reasoning"), trade.get("paper", True),
-            trade.get("exchange_order_id", ""),
+            order_id,
         )
         return row["id"]
 

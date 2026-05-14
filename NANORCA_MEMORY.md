@@ -1,7 +1,7 @@
 # NANORCA — Memory & Progression Document
 > **Purpose:** Single source of truth for project state. Update this file after every significant change.
 > **Owner:** Nego (abetnego.kristiawan@gmail.com)
-> **Last updated:** 2026-05-14
+> **Last updated:** 2026-05-15
 
 ---
 
@@ -17,14 +17,14 @@ NANORCA is an autonomous crypto trading bot built with:
 **Architecture:** Python ↔ gRPC ↔ Go ↔ Binance/Hyperliquid/Polymarket
 
 ---
-> **Last updated:** 2026-05-14 (VPS deployment day — Hostinger KVM2)
+> **Last updated:** 2026-05-15
 
 ---
 
 ## 2. Current Phase
 
-### Phase: 1 — Paper Trading (LOCAL)
-**Status:** Running on owner's laptop via Docker Desktop
+### Phase: 1 — Paper Trading (VPS)
+**Status:** Running 24/7 on Hostinger KVM2 VPS (72.62.124.23)
 
 | Item | State |
 |---|---|
@@ -38,7 +38,7 @@ NANORCA is an autonomous crypto trading bot built with:
 | Live trading | 🔒 LOCKED until 14-day paper win rate ≥ 60% |
 
 **What the bot does right now:**
-1. Scans top-25 Binance USDT futures pairs by volume every 60 seconds
+1. Scans top-25 Binance USDT futures pairs by volume every 30 seconds
 2. Pre-filter checks if any signal crosses threshold before calling Claude
 3. If market is quiet → skips Claude call (saves API cost)
 4. If signals fire → calls Claude Haiku → gets trading decision
@@ -56,6 +56,17 @@ NANORCA is an autonomous crypto trading bot built with:
 | Locked coins (other) | ~$0.64 |
 | Portfolio total | ~$12.04 |
 | Bot tradeable capital | **$11.39** |
+| Simulated paper capital (bot tracker) | **~$12.91** (after 2026-05-14 session) |
+
+**Paper trades completed:**
+- OSMO LONG → WIN +$0.33 | KITE LONG ×3 → WIN +$0.18/+$0.24/+$0.26 (early session)
+- SOL LONG (129 min hold) → WIN +$0.22
+- ZEC LONG (21 min hold) → WIN +$0.20
+- DOGE LONG → open (monitoring)
+- SAGA LONG ×7 — all WIN (fast momentum, 1–7 min holds, +$0.13 to +$0.43 each)
+- SAGA LONG ×1 — LOSS -$0.50 (stop hit after momentum reversed)
+- Capital peak reached: **$13.42**, pulled back to **$12.91** after SAGA stop loss
+- DB bug found during session: trades stuck as "open" in DB despite capital updating correctly (fixed 2026-05-15)
 
 **Capital bucket system:**
 - **Tradeable** = USDT-M futures wallet → bot sizes trades from this
@@ -133,7 +144,7 @@ nanorca/
 
 ## 5. Trading Logic — Decision Pipeline
 
-Every 60 seconds:
+Every 30 seconds:
 ```
 1. Bot state check          → skip if paused/stopped
 2. Capital floor check      → emergency stop if < 25% of starting capital
@@ -294,7 +305,7 @@ SPOT: LONG - SOLUSDT
 
 ```bash
 PAPER_TRADING=true              # NEVER set false without 14-day paper proof
-SCAN_INTERVAL_SECONDS=60        # Phase 2 lean: use 90-120
+SCAN_INTERVAL_SECONDS=30        # Changed from 60; Phase 2 lean: revert to 90-120 if API cost climbs
 ENABLED_EXCHANGES=binance       # Add hyperliquid,polymarket in Phase 3
 BINANCE_SCAN_TOP_N=20           # Top 20 USDT pairs by 24h volume
 PRIORITY_MARKETS=ETH,SOL,BNB,DOGE,ADA,AVAX,INJ,LINK,DOT,OP  # No BTC (min lot too big)
@@ -515,12 +526,17 @@ command: >
 | 2026-05-14 | Feature: periodic monitoring updates every 20 min while paper position is open — shows current price, unrealized P&L, distance to target/stop | paper_order_book.py, main.py |
 | 2026-05-14 | Fix: log_trade_closed fallback — when _open_trades cleared by restart, update DB directly by exchange_order_id. Prevents trades stuck as 'open' after restart. | db.py, outcome_logger.py |
 | 2026-05-14 | Fix: capital background sync — main_loop retries real balance sync every cycle until success (synced_from_real flag). Fixes $10 stuck capital after failed startup sync. | capital_tracker.py, main.py |
+| 2026-05-15 | Fix: SAGA/fast-trend coins re-entering every 30s after close — added 15-min per-market cooldown to PaperOrderBook. After any close, same market is blocked for 15 min. | paper_order_book.py |
+| 2026-05-15 | Fix: DB trades stuck as "open" — `close_trade_by_order_id()` is now the primary close path (was fallback). Primary path no longer depends on `_open_trades` in-memory dict. | outcome_logger.py |
+| 2026-05-15 | Fix: if primary DB close fails, fallback is now always tried (was unreachable on primary exception) | outcome_logger.py |
+| 2026-05-15 | Fix: duplicate trade inserts — Python-level guard in `log_trade_opened()` + DB-level SELECT check before INSERT in `save_trade()` | outcome_logger.py, db.py |
+| 2026-05-15 | Fix: DB close errors now send Telegram `⚠️ DB CLOSE ERROR` alert with exact error; WIN/LOSS telegram gets `⚠️ DB ERR` tag when DB update failed | main.py |
 
 ---
 
 ## 17. Current Status & Roadmap
 
-**Bot status as of 2026-05-14:** Running on VPS. Paper trading active. Bugs being fixed.
+**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading active. Capital ~$12.91. Bugs #13–16 fixed (cooldown, DB close reliability, duplicates, error visibility). Deploying fixes now.
 
 ### Confirmed Feature Decisions
 - ✅ Grid trading — OUR bot does it (not Binance built-in), AI-activated, separate from momentum
@@ -539,6 +555,22 @@ command: >
 | 4 | /suggestion says OSMO/PEPE not found | Spot-only coins have no futures; 1000PEPE naming on futures | ✅ Fixed — aliases + spot-only detection |
 | 5 | Grafana shows no paper trade history | DB was empty (old trades had JSONB bug); Grafana had no mode filter | ✅ Fixed — mode dropdown, paper/live split panels |
 | 6 | Grafana mode dropdown stuck after switching to Live | Variable values contained SQL syntax causing URL encoding issues | ✅ Fixed — simple string values (all/paper/live) |
+| 7 | asyncpg "expected str, got list" on signal_mix | JSONB column received Python list without codec — needs json.dumps or codec | ✅ Fixed — registered JSONB codec on pool init; pass dicts directly |
+| 8 | Duplicate paper orders on same market (KITE ×3) | PaperOrderBook.plan() allowed multiple orders per market | ✅ Fixed — blocks if market already has pending/open order |
+| 9 | Open trades stuck as 'open' in DB after restart | _open_trades dict lost on restart → log_trade_closed() found nothing | ✅ Fixed — fallback close_trade_by_order_id(); recover_from_db() on startup |
+| 10 | Capital stuck at $10 after startup sync failure | Executor not ready at boot → sync failed → synced_from_real never set | ✅ Fixed — 3-retry startup loop + background sync every cycle until flag set |
+| 11 | Go executor fatal crash (concurrent map writes) | Multiple goroutines writing prices map without mutex | ✅ Fixed — sync.RWMutex on all prices map reads/writes |
+| 12 | Grafana zeros all metrics when executor is down | update_exchange_balances([]) called with empty list → zeroed gauges | ✅ Fixed — early return if balances empty (hold last known value) |
+| 13 | SAGA (or any fast-trending coin) re-enters every 30s after close | After close, PaperOrderBook had no cooldown — next cycle saw free slot, Claude still saw momentum, planned again | ✅ Fixed — 15-min per-market cooldown added to PaperOrderBook |
+| 14 | DB trades stuck as "open" despite Telegram showing WIN/LOSS | `log_trade_closed()` was using `_open_trades[id]` as primary path; if that failed the fallback was never tried; exception swallowed silently | ✅ Fixed — `close_trade_by_order_id()` is now primary (always knows order_id); PK path is fallback; errors now raise → Telegram alert |
+| 15 | Duplicate trade insert possible if fill detected twice | No guard in `log_trade_opened()` or `save_trade()` | ✅ Fixed — Python-level duplicate guard in `log_trade_opened()`; DB-level check in `save_trade()` before INSERT |
+| 16 | DB close error silently swallowed — user had no visibility | `except` in `_process_paper_exits` only wrote to file log on VPS | ✅ Fixed — now sends Telegram `⚠️ DB CLOSE ERROR` alert with exact exception; WIN/LOSS message gets `⚠️ DB ERR` tag |
+
+### User Decision: Settings Freeze
+**Decided 2026-05-14 — User will NOT change any bot settings for 2 weeks.**
+Items frozen: pre-filter threshold (0.30%), scan top-N (25), target_profit_pct, stop_loss_pct, confidence threshold (65), scan interval (30s).
+Reason: Need baseline data before tuning — changing variables before data is collected invalidates the learning period.
+Review date: **2026-05-28** — after first weekly learning report and 14-day paper baseline.
 
 ### Next Phase: Grid Trading (Phase B)
 - Spot grid: Claude activates when coin is ranging, sets price range + levels via ATR
