@@ -381,6 +381,25 @@ async def main_loop(
     try:
         balances = await order_router.get_balances()
         metrics.update_exchange_balances(balances)
+
+        # If startup capital sync failed, retry every cycle until it works
+        if config.paper_trading and not capital_tracker.synced_from_real:
+            binance_bal = next(
+                (b for b in balances if b.get("exchange") == "binance" and b.get("available")),
+                None,
+            )
+            if binance_bal:
+                sync_usd = binance_bal.get("usdt", 0)
+                if sync_usd < 1.0:
+                    sync_usd = binance_bal.get("total_usd", 0)
+                if sync_usd > 1.0:
+                    capital_tracker.sync_from_real_balance(sync_usd)
+                    metrics.update_capital(
+                        capital_tracker.current_capital,
+                        config.starting_capital_usd,
+                        capital_tracker.daily_pnl,
+                    )
+                    log.info(f"Capital synced in main cycle: ${sync_usd:.2f}")
     except Exception as e:
         log.debug(f"Balance fetch skipped: {e}")
 

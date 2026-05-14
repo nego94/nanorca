@@ -31,6 +31,7 @@ class CapitalTracker:
         self._day_start_capital = config.starting_capital_usd
         self._day_reset_at: datetime | None = None
         self._peak_capital = config.starting_capital_usd
+        self.synced_from_real = False  # True once real exchange balance is applied
 
         # Drawdown recovery flags — read by risk_manager and main_loop
         self.leverage_reduced = False
@@ -135,6 +136,7 @@ class CapitalTracker:
         self.current_capital      = real_usd
         self._day_start_capital   = real_usd
         self._peak_capital        = max(real_usd, self._peak_capital)
+        self.synced_from_real     = True
         log.info(
             f"Capital synced from real exchange balance: "
             f"${old:.2f} → ${real_usd:.2f}"
