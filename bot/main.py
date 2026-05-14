@@ -40,6 +40,7 @@ from brain.confidence_scorer import ConfidenceScorer
 from execution.order_router import OrderRouter
 from learning.outcome_logger import OutcomeLogger
 from data.suggestion_store import SuggestionStore
+from data.extra_markets_store import ExtraMarketsStore
 from scheduler import build_scheduler
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -198,6 +199,7 @@ async def main_loop(
     telegram: TelegramBot,
     metrics: PrometheusExporter,
     suggestion_store: SuggestionStore,
+    extra_markets: ExtraMarketsStore,
 ) -> None:
     """
     Main trading cycle — runs every SCAN_INTERVAL_SECONDS.
@@ -250,7 +252,9 @@ async def main_loop(
 
     # ── Step 4: Scan markets + fetch real balances via Go executor ────────
     try:
-        market_snapshots = await order_router.scan_markets(config.priority_markets)
+        # Union priority markets + user /check additions → passed to Go executor
+        all_markets = list(config.priority_markets) + extra_markets.get()
+        market_snapshots = await order_router.scan_markets(all_markets)
     except Exception as e:
         log.error(f"Market scan failed: {e}")
         metrics.record_scan_error()
@@ -462,6 +466,7 @@ async def run() -> None:
     outcome_logger     = OutcomeLogger(db)
     metrics            = PrometheusExporter(config)
     suggestion_store   = SuggestionStore()
+    extra_markets      = ExtraMarketsStore()
 
     # ── Start Prometheus metrics server (port 8080) ────────────────────────
     metrics.start_server(port=8080)
@@ -475,6 +480,7 @@ async def run() -> None:
         capital_tracker=capital_tracker,
         order_router=order_router,
         suggestion_store=suggestion_store,
+        extra_markets=extra_markets,
     )
     await telegram.start()
     log.info("✅ Telegram bot started")
@@ -542,6 +548,7 @@ async def run() -> None:
         outcome_logger=outcome_logger,
         metrics=metrics,
         suggestion_store=suggestion_store,
+        extra_markets=extra_markets,
     )
     scheduler.start()
     log.info("✅ Scheduler started — NANORCA fully operational")

@@ -56,8 +56,10 @@ func NewServer(
 }
 
 // ScanMarkets runs a full parallel market scan and returns snapshots.
+// req.Markets carries extra user-requested symbols (from /check Telegram command)
+// that are unioned with the dynamic top-N Binance list in the scanner.
 func (s *Server) ScanMarkets(ctx context.Context, req *pb.MarketScanRequest) (*pb.MarketScanResponse, error) {
-	return s.scanner.ScanAll(ctx), nil
+	return s.scanner.ScanAll(ctx, req.Markets), nil
 }
 
 // PlaceOrder routes an order to the appropriate exchange.

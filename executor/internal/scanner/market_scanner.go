@@ -87,7 +87,9 @@ func (s *MarketScanner) binanceMarkets(ctx context.Context) []string {
 }
 
 // ScanAll performs a parallel scan across all exchanges.
-func (s *MarketScanner) ScanAll(ctx context.Context) *pb.MarketScanResponse {
+// extraMarkets: additional base symbols (e.g. "INJ", "PEPE") to scan on top of the top-N list.
+// These come from user /check commands on Telegram and are unioned with the dynamic top-N.
+func (s *MarketScanner) ScanAll(ctx context.Context, extraMarkets []string) *pb.MarketScanResponse {
 	start := time.Now()
 
 	var (
@@ -103,7 +105,20 @@ func (s *MarketScanner) ScanAll(ctx context.Context) *pb.MarketScanResponse {
 		mu.Unlock()
 	}
 
+	// Union top-N markets with user-requested extra markets
 	markets := s.binanceMarkets(ctx)
+	if len(extraMarkets) > 0 {
+		seen := make(map[string]bool, len(markets))
+		for _, m := range markets {
+			seen[m] = true
+		}
+		for _, m := range extraMarkets {
+			if !seen[m] {
+				markets = append(markets, m)
+				seen[m] = true
+			}
+		}
+	}
 
 	// ── Binance scans — price + volume (parallel per symbol) ─────────────────
 	for _, market := range markets {

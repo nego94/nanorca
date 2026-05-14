@@ -19,13 +19,14 @@ log = logging.getLogger("nanorca.alerts.telegram")
 class TelegramBot:
     """Telegram bot for owner notifications and two-way command interface."""
 
-    def __init__(self, config, db, circuit_breaker, capital_tracker, order_router, suggestion_store=None) -> None:
+    def __init__(self, config, db, circuit_breaker, capital_tracker, order_router, suggestion_store=None, extra_markets=None) -> None:
         self._config = config
         self._db = db
         self._cb = circuit_breaker
         self._cap = capital_tracker
         self._router = order_router
         self._suggestions = suggestion_store
+        self._extra_markets = extra_markets
         self._app: Application | None = None
 
     async def start(self) -> None:
@@ -44,7 +45,10 @@ class TelegramBot:
             ("capital",      self._cmd_capital),
             ("positions",    self._cmd_positions),
             ("markets",      self._cmd_markets),
-            ("readmarkets",  self._cmd_markets),
+            ("readmarkets",    self._cmd_markets),
+            ("check",          self._cmd_check),
+            ("listpriority",   self._cmd_listpriority),
+            ("removepriority", self._cmd_removepriority),
             ("history",      self._cmd_history),
             ("learning",     self._cmd_learning),
             ("setfloor",     self._cmd_setfloor),
@@ -363,6 +367,50 @@ class TelegramBot:
             parse_mode="MarkdownV2"
         )
 
+    async def _cmd_check(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Add a coin to the extra scan list. Usage: /check SOL or /check PEPE"""
+        if not self._is_authorized(update): await self._deny(update); return
+        if not ctx.args:
+            await update.message.reply_text(
+                "Usage: `/check TOKEN`\nExample: `/check PEPE` or `/check WIF`\n\n"
+                "Adds the coin to the scan list alongside the automatic top-25.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        if not self._extra_markets:
+            await update.message.reply_text("❌ Extra markets store not initialised.")
+            return
+        symbol = ctx.args[0]
+        ok, msg = self._extra_markets.add(symbol)
+        current = self._extra_markets.get()
+        reply = msg
+        if ok and current:
+            reply += f"\n\n📋 Current extra list ({len(current)}/10): {', '.join(f'`{m}USDT`' for m in current)}"
+        await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_listpriority(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Show current extra scan list."""
+        if not self._is_authorized(update): await self._deny(update); return
+        if not self._extra_markets:
+            await update.message.reply_text("Extra markets store not initialised.")
+            return
+        await update.message.reply_text(
+            self._extra_markets.format_telegram(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    async def _cmd_removepriority(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Remove a coin from extra scan list. Usage: /removepriority SOL"""
+        if not self._is_authorized(update): await self._deny(update); return
+        if not ctx.args:
+            await update.message.reply_text("Usage: `/removepriority TOKEN`\nExample: `/removepriority PEPE`", parse_mode=ParseMode.MARKDOWN)
+            return
+        if not self._extra_markets:
+            await update.message.reply_text("❌ Extra markets store not initialised.")
+            return
+        ok, msg = self._extra_markets.remove(ctx.args[0])
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
     async def _cmd_stop_exchange(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update): await self._deny(update); return
         if not self._is_owner(update): await self._deny_owner_only(update); return
@@ -384,6 +432,9 @@ class TelegramBot:
             "/capital — Per-exchange balance detail\n"
             "/markets — Market suggestions (50–64 conf) + live prices\n"
             "/readmarkets — Same as /markets\n"
+            "/check TOKEN — Add a coin to your extra scan list (e.g. /check PEPE)\n"
+            "/listpriority — Show your extra scan list\n"
+            "/removepriority TOKEN — Remove a coin from extra scan list\n"
             "/positions — Open paper/live trades\n"
             "/report [7d] — Trade P&L breakdown\n"
             "/history [n] — Last N trades\n"
