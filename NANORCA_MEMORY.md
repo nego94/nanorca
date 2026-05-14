@@ -510,6 +510,7 @@ command: >
 | 2026-05-14 | Fix: _process_paper_fills sends Telegram alert when DB save fails instead of silent log | main.py |
 | 2026-05-14 | Grafana: mode dropdown filter (All/Paper/Live), separate Paper Stats and Live Stats panels, Cumulative P&L split by mode, opened_at used for trade time display | nanorca.json |
 | 2026-05-14 | Fix: Grafana mode variable uses simple string values (all/paper/live) not SQL — SQL conditions in values caused stuck state when switching modes | nanorca.json |
+| 2026-05-14 | Fix: asyncpg JSONB codec registered on pool init — was rejecting Python lists for signal_mix jsonb column with "expected str, got list" → paper trades not saved to DB | db.py |
 
 ---
 
