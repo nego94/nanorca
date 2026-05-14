@@ -124,11 +124,30 @@ class CapitalTracker:
 
     # ── Real balance sync ──────────────────────────────────────────────────
 
+    def restore_from_snapshot(self, snapshot: dict) -> None:
+        """
+        Restore capital from the last DB snapshot on bot restart.
+
+        PRIMARY startup path for paper mode. Preserves accumulated paper P&L
+        across restarts instead of resetting to the real exchange balance.
+        Sets synced_from_real=True so the background sync loop cannot
+        overwrite this value with the live exchange balance.
+        """
+        total = float(snapshot.get("total_usd") or 0)
+        if total <= 0:
+            return
+        old = self.current_capital
+        self.current_capital    = total
+        self._day_start_capital = total
+        self._peak_capital      = max(total, self._peak_capital)
+        self.synced_from_real   = True
+        log.info(f"Capital restored from DB snapshot: ${old:.2f} → ${total:.2f}")
+
     def sync_from_real_balance(self, real_usd: float) -> None:
         """
-        Sync the paper trading bankroll from the real exchange balance.
-        Called on startup in paper mode so trade sizing uses actual capital.
-        Only updates if real_usd is a valid non-zero amount.
+        Seed the paper trading bankroll from the real exchange balance.
+        Called ONLY on first run when no DB snapshot exists yet.
+        After restore_from_snapshot() runs, synced_from_real=True blocks this.
         """
         if real_usd <= 0:
             return
@@ -137,10 +156,7 @@ class CapitalTracker:
         self._day_start_capital   = real_usd
         self._peak_capital        = max(real_usd, self._peak_capital)
         self.synced_from_real     = True
-        log.info(
-            f"Capital synced from real exchange balance: "
-            f"${old:.2f} → ${real_usd:.2f}"
-        )
+        log.info(f"Capital seeded from real exchange balance: ${old:.2f} → ${real_usd:.2f}")
 
     def refresh_from_real(self, real_usd: float) -> None:
         """

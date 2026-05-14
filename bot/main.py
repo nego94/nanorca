@@ -704,43 +704,59 @@ async def run() -> None:
     await outcome_logger.recover_from_db(max_hold_minutes=_MAX_HOLD_MINUTES)
     log.info("✅ Open trade recovery complete")
 
-    # ── In paper mode: sync starting capital from real exchange balance ─────
-    # Retries up to 3 times with 10s gap — executor may not be ready immediately.
+    # ── In paper mode: restore capital from DB snapshot or seed from real balance ──
+    #
+    # Priority order:
+    #   1. DB snapshot (restart → preserves accumulated paper P&L)  ← PRIMARY
+    #   2. Real exchange balance (first run, no snapshot yet)        ← FALLBACK
+    #   3. STARTING_CAPITAL_USD from .env                           ← LAST RESORT
+    #
+    # DO NOT sync from real balance after a snapshot is found.
+    # The real balance reflects actual USDT on the exchange — it will differ from
+    # the simulated paper capital, and overwriting it loses all paper P&L history.
     if config.paper_trading:
-        for _attempt in range(3):
-            try:
-                real_balances = await order_router.get_balances()
-                binance_bal = next(
-                    (b for b in real_balances if b.get("exchange") == "binance" and b.get("available")),
-                    None,
-                )
-                real_tradeable = 0.0
-                if binance_bal:
-                    real_tradeable = binance_bal.get("usdt", 0)
-                    if real_tradeable < 1.0:
-                        real_tradeable = binance_bal.get("total_usd", 0)
-
-                if real_tradeable > 1.0:
-                    capital_tracker.sync_from_real_balance(real_tradeable)
-                    metrics.update_capital(
-                        capital_tracker.current_capital,
-                        config.starting_capital_usd,
-                        capital_tracker.daily_pnl,
-                    )
-                    log.info(
-                        f"✅ Paper capital synced: ${real_tradeable:.2f} USDT "
-                        f"(attempt {_attempt + 1})"
-                    )
-                    break
-                else:
-                    log.info(f"ℹ️  Balance not ready (attempt {_attempt + 1}/3) — retrying in 10s")
-                    await asyncio.sleep(10)
-            except Exception as e:
-                log.warning(f"Balance sync attempt {_attempt + 1} failed: {e}")
-                if _attempt < 2:
-                    await asyncio.sleep(10)
+        snapshot = await db.get_last_capital_snapshot()
+        if snapshot and float(snapshot.get("total_usd") or 0) > 1.0:
+            capital_tracker.restore_from_snapshot(snapshot)
+            metrics.update_capital(
+                capital_tracker.current_capital,
+                config.starting_capital_usd,
+                capital_tracker.daily_pnl,
+            )
+            log.info(f"✅ Paper capital restored from DB: ${capital_tracker.current_capital:.2f}")
         else:
-            log.warning("Balance sync gave up after 3 attempts — using STARTING_CAPITAL_USD")
+            # First run — no snapshot exists yet. Seed from real exchange balance.
+            for _attempt in range(3):
+                try:
+                    real_balances = await order_router.get_balances()
+                    binance_bal = next(
+                        (b for b in real_balances if b.get("exchange") == "binance" and b.get("available")),
+                        None,
+                    )
+                    real_tradeable = 0.0
+                    if binance_bal:
+                        real_tradeable = binance_bal.get("usdt", 0)
+                        if real_tradeable < 1.0:
+                            real_tradeable = binance_bal.get("total_usd", 0)
+
+                    if real_tradeable > 1.0:
+                        capital_tracker.sync_from_real_balance(real_tradeable)
+                        metrics.update_capital(
+                            capital_tracker.current_capital,
+                            config.starting_capital_usd,
+                            capital_tracker.daily_pnl,
+                        )
+                        log.info(f"✅ Paper capital seeded from real balance: ${real_tradeable:.2f} (attempt {_attempt + 1})")
+                        break
+                    else:
+                        log.info(f"ℹ️  Balance not ready (attempt {_attempt + 1}/3) — retrying in 10s")
+                        await asyncio.sleep(10)
+                except Exception as e:
+                    log.warning(f"Balance seed attempt {_attempt + 1} failed: {e}")
+                    if _attempt < 2:
+                        await asyncio.sleep(10)
+            else:
+                log.warning("Balance seed gave up after 3 attempts — using STARTING_CAPITAL_USD")
 
     # ── Announce readiness ─────────────────────────────────────────────────
     await telegram.send_info(

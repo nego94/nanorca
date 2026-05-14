@@ -531,12 +531,15 @@ command: >
 | 2026-05-15 | Fix: if primary DB close fails, fallback is now always tried (was unreachable on primary exception) | outcome_logger.py |
 | 2026-05-15 | Fix: duplicate trade inserts — Python-level guard in `log_trade_opened()` + DB-level SELECT check before INSERT in `save_trade()` | outcome_logger.py, db.py |
 | 2026-05-15 | Fix: DB close errors now send Telegram `⚠️ DB CLOSE ERROR` alert with exact error; WIN/LOSS telegram gets `⚠️ DB ERR` tag when DB update failed | main.py |
+| 2026-05-15 | Fix: capital resets to real exchange balance on every restart — added restore_from_snapshot() to capital_tracker; startup reads last capital_snapshots record before any real balance sync; real balance sync only runs on first boot (no snapshot exists) | capital_tracker.py, db.py, main.py |
+| 2026-05-15 | Fix: missing DB index on exchange_order_id causing full TimescaleDB chunk scans on every paper trade close | migrations/002_add_indexes.sql |
+| 2026-05-15 | DB fix: manually corrected 11 stuck "open" trades (SAGA ×8, ZEC, SOL, DOGE) with actual P&L from Telegram history using direct SQL UPDATE | VPS SQL |
 
 ---
 
 ## 17. Current Status & Roadmap
 
-**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading active. Capital ~$12.91. Bugs #13–16 fixed (cooldown, DB close reliability, duplicates, error visibility). Deploying fixes now.
+**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading active. Capital ~$12.91. DB close reliability fixed. Capital restoration on restart fixed. Historical trade data manually corrected via SQL.
 
 ### Confirmed Feature Decisions
 - ✅ Grid trading — OUR bot does it (not Binance built-in), AI-activated, separate from momentum
@@ -565,6 +568,9 @@ command: >
 | 14 | DB trades stuck as "open" despite Telegram showing WIN/LOSS | `log_trade_closed()` was using `_open_trades[id]` as primary path; if that failed the fallback was never tried; exception swallowed silently | ✅ Fixed — `close_trade_by_order_id()` is now primary (always knows order_id); PK path is fallback; errors now raise → Telegram alert |
 | 15 | Duplicate trade insert possible if fill detected twice | No guard in `log_trade_opened()` or `save_trade()` | ✅ Fixed — Python-level duplicate guard in `log_trade_opened()`; DB-level check in `save_trade()` before INSERT |
 | 16 | DB close error silently swallowed — user had no visibility | `except` in `_process_paper_exits` only wrote to file log on VPS | ✅ Fixed — now sends Telegram `⚠️ DB CLOSE ERROR` alert with exact exception; WIN/LOSS message gets `⚠️ DB ERR` tag |
+| 17 | Capital resets to real exchange balance ($3-4) on every restart | `sync_from_real_balance()` always called on startup — overwrites accumulated paper capital with real Binance balance | ✅ Fixed — startup reads last `capital_snapshots` record first (`restore_from_snapshot()`). Real balance sync only on first boot (no snapshot). `synced_from_real=True` blocks background sync from overwriting. |
+| 18 | Historical trades stuck as "open" in DB (SAGA ×8, ZEC, SOL, DOGE) | DB close wasn't being called reliably due to old code bug | ✅ Fixed manually via SQL — ROW_NUMBER() for SAGA batch, direct UPDATE for ZEC/SOL/DOGE with exact Telegram P&L values |
+| 19 | Missing index on `exchange_order_id` — close_trade_by_order_id() scans all chunks | No index → full TimescaleDB hypertable scan on every paper trade close | ✅ Fixed — migration 002_add_indexes.sql: `idx_trades_order_id` + `idx_trades_open_paper` |
 
 ### User Decision: Settings Freeze
 **Decided 2026-05-14 — User will NOT change any bot settings for 2 weeks.**

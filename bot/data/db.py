@@ -204,6 +204,22 @@ class Database:
             snap["total_usd"], snap["starting_usd"], snap.get("pct_change"), snap.get("daily_pnl"),
         )
 
+    async def get_last_capital_snapshot(self) -> dict | None:
+        """
+        Fetch the most recent capital snapshot.
+        Used on bot restart to restore accumulated paper P&L without overwriting
+        it with the real exchange balance.
+        """
+        row = await self._fetchrow(
+            """
+            SELECT total_usd, starting_usd, pct_change, daily_pnl, recorded_at
+            FROM capital_snapshots
+            ORDER BY recorded_at DESC
+            LIMIT 1
+            """
+        )
+        return dict(row) if row else None
+
     # ── Performance context ────────────────────────────────────────────────
 
     async def get_performance_context(self) -> dict[str, Any]:
