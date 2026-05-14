@@ -345,6 +345,7 @@ Every Sunday during weekly learning:
 | Position lost on executor restart | Open positions vanish from in-memory state | Persist positions to DB (Phase 4) |
 | BTC excluded from trading | BTCUSDT min lot ~$100, too big for $11 capital | Resolved: prompt tells Claude to avoid BTC |
 | CMC/news signals not connected | Missing trend intelligence | Phase 3 — CMC_API_KEY exists in .env |
+| Proto generation was incomplete | executor Dockerfile only generated pb.go not grpc.pb.go → `UnimplementedExecutorServiceServer` undefined | Fixed: now installs protoc-gen-go-grpc and generates both files |
 | Fear & Greed Index not connected | Missing macro sentiment signal | Phase 3 |
 | Weekly learning not run yet | Signal weights still at defaults | Will auto-run next Sunday 00:00 UTC |
 
@@ -464,7 +465,8 @@ command: >
 | 2026-05-14 | BINANCE_SCAN_TOP_N increased to 25 | .env |
 | 2026-05-14 | Documented future /check TOKEN + dynamic priority market system | NANORCA_MEMORY.md |
 | 2026-05-14 | Exclude BTC+ETH from suggestions (min lot too large / low % volatility) | suggestion_store.py, claude_brain.py |
-| 2026-05-14 | VPS deployment: Hostinger KVM2 (paper mode) | — |
+| 2026-05-14 | VPS deployment: Hostinger KVM2 (paper mode, IP: 72.62.124.23) | — |
+| 2026-05-14 | Fix: executor Dockerfile now generates both nanorca.pb.go AND nanorca_grpc.pb.go | executor/Dockerfile |
 
 ---
 
