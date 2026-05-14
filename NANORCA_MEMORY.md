@@ -511,6 +511,8 @@ command: >
 | 2026-05-14 | Grafana: mode dropdown filter (All/Paper/Live), separate Paper Stats and Live Stats panels, Cumulative P&L split by mode, opened_at used for trade time display | nanorca.json |
 | 2026-05-14 | Fix: Grafana mode variable uses simple string values (all/paper/live) not SQL — SQL conditions in values caused stuck state when switching modes | nanorca.json |
 | 2026-05-14 | Fix: asyncpg JSONB codec registered on pool init — was rejecting Python lists for signal_mix jsonb column with "expected str, got list" → paper trades not saved to DB | db.py |
+| 2026-05-14 | Fix: duplicate paper orders on same market — now blocked if market already has pending/open order | paper_order_book.py |
+| 2026-05-14 | Feature: periodic monitoring updates every 20 min while paper position is open — shows current price, unrealized P&L, distance to target/stop | paper_order_book.py, main.py |
 
 ---
 
