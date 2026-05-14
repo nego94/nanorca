@@ -570,12 +570,33 @@ command: >
 | 2026-05-15 | Redesign: /status now shows 4 clear sections — (1) Bot state, (2) Real Account (actual Binance balance, display only), (3) Paper Simulation (paper capital, floor, daily P&L, open positions — completely separate from real money), (4) Trading Plan. Real money and paper money never mixed. | telegram_bot.py |
 | 2026-05-15 | Fix: floor check uses paper capital only — real Binance balance dropping below floor does NOT stop paper trading. Bot continues collecting data regardless of real account balance. | main.py, capital_tracker.py |
 | 2026-05-15 | Simplify: bot startup/shutdown messages now one-line only ("NANORCA online — Paper mode / Type /status for full details"). All detail moved to /status command. | main.py |
+| 2026-05-15 | Fix: /status Daily P&L was reset on every restart (used in-memory counter). Now queries DB get_performance_context() for true 24h P&L + 24h/7d win rates that survive restarts. | telegram_bot.py |
+| 2026-05-15 | Fix: /status % change was wrong — used config.starting_capital_usd ($10) not actual synced starting capital ($11.39). Added _effective_starting to CapitalTracker. Updated by sync_from_real_balance, restored from snapshot. pct_from_start, floor_capital, _snapshot all use it. | capital_tracker.py |
+| 2026-05-15 | Fix: /status leverage showed 10x (plan value) but paper trades hardcode 3x in PaperOrderBook. Status now shows 3x for paper mode. | telegram_bot.py |
+| 2026-05-15 | Fix: Prometheus daily_pnl_usd now updated from DB after each Claude cycle — Grafana shows accurate 24h P&L across restarts. | main.py |
 
 ---
 
 ## 17. Current Status & Roadmap
 
-**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading stable. Paper capital ~$12.91 (persists across restarts). All Phase A+B bugs resolved. Real account ($3-4 Binance) and paper simulation fully separated — floor check uses paper capital only, bot continues collecting data regardless of real balance.
+**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading stable. Paper capital ~$13.13 (persists across restarts via DB snapshot). 15 trades closed correctly in DB (86.7% WR, +$2.42 P&L). /status shows correct 24h P&L from DB, correct % from actual starting capital, correct 3x paper leverage. Real account ($3-4 Binance) and paper simulation fully separated.
+
+### Paper Trade Data as Analysis Source
+All paper trades are saved to DB with FULL context:
+- `market`: which coin was traded
+- `signal_mix`: JSONB — exactly which signals fired and at what value
+- `confidence_score`: Claude's confidence when it decided to trade
+- `claude_reasoning`: full reasoning text from Claude
+- `direction`, `entry_price`, `exit_price`, `pnl_usd`, `win`: outcome
+
+This data feeds the **weekly learning loop** (Sunday 00:00 UTC):
+1. Claude Sonnet reads all closed trades from the past week
+2. Analyzes which signals predicted wins vs losses
+3. Outputs updated signal weights + reasoning
+4. Weights saved to `signal_weights` table
+5. Next week's trades use the updated weights → bot learns and improves
+
+**First weekly learning:** Sunday 2026-05-18 00:00 UTC — will analyze the ~15 paper trades already in DB.
 
 ### Confirmed Feature Decisions
 - ✅ Grid trading — OUR bot does it (not Binance built-in), AI-activated, separate from momentum
