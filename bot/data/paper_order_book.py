@@ -105,10 +105,20 @@ class PaperOrderBook:
 
         Entry is the current market price (market order simulation).
         Target and stop are calculated from the decision percentages.
-        Returns None if already at max pending orders.
+        Returns None if already at max pending orders or same market already active.
         """
         if len(self.get_pending()) >= self._max_pending:
             log.info(f"Paper book: max pending ({self._max_pending}) reached — skipping new order")
+            return None
+
+        # Block duplicate orders on same market — wait for existing one to close first
+        market = decision.get("market", "UNKNOWN")
+        existing = next(
+            (o for o in self._orders.values() if o.market == market and o.status in ("pending", "open")),
+            None,
+        )
+        if existing:
+            log.info(f"Paper book: already have {existing.status} order for {market} — skipping duplicate")
             return None
 
         direction  = (decision.get("direction") or "long").lower()
@@ -230,6 +240,28 @@ class PaperOrderBook:
         return exits
 
     # ── Queries ────────────────────────────────────────────────────────────
+
+    def get_monitoring_updates(
+        self, price_map: dict[str, float], interval_seconds: float = 1200
+    ) -> list[tuple[PaperOrder, float]]:
+        """
+        Return open orders that are due for a periodic monitoring update.
+        Default interval: 20 minutes (1200s).
+        Returns list of (order, current_price) pairs.
+        """
+        now = time.monotonic()
+        due = []
+        for order in self._orders.values():
+            if order.status != "open" or order.filled_at is None:
+                continue
+            current = price_map.get(order.market, 0)
+            if current <= 0:
+                continue
+            last = getattr(order, "_last_update", order.filled_at)
+            if (now - last) >= interval_seconds:
+                order._last_update = now  # type: ignore[attr-defined]
+                due.append((order, current))
+        return due
 
     def get_pending(self) -> list[PaperOrder]:
         return [o for o in self._orders.values() if o.status == "pending"]
