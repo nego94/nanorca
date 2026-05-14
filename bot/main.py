@@ -39,6 +39,7 @@ from brain.signal_builder import SignalBuilder
 from brain.confidence_scorer import ConfidenceScorer
 from execution.order_router import OrderRouter
 from learning.outcome_logger import OutcomeLogger
+from data.suggestion_store import SuggestionStore
 from scheduler import build_scheduler
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -68,8 +69,10 @@ _PREFILTER_POLY_GAP     = 0.01    # Polymarket YES+NO gap > 1%
 # Total minimum: 0.09%. Below this, the trade loses money after fees.
 _MIN_GROSS_MOVE_PCT = 0.09
 
-# Graduated confidence hard skip — below this, never trade regardless of signals.
-_CONFIDENCE_HARD_SKIP = 55
+# Hard skip below this — no trade AND no suggestion logged.
+_CONFIDENCE_HARD_SKIP = 50
+# Minimum confidence to actually TRADE (50-64 → suggestion only, not traded).
+_CONFIDENCE_MIN_TRADE = 65
 
 
 def _prefilter_should_skip(signals: dict) -> tuple[bool, str]:
@@ -194,6 +197,7 @@ async def main_loop(
     outcome_logger: OutcomeLogger,
     telegram: TelegramBot,
     metrics: PrometheusExporter,
+    suggestion_store: SuggestionStore,
 ) -> None:
     """
     Main trading cycle — runs every SCAN_INTERVAL_SECONDS.
@@ -310,7 +314,7 @@ async def main_loop(
         metrics.record_claude_error()
         return
 
-    # ── Step 7: Confidence check (graduated: <55 hard skip) ──────────────
+    # ── Step 7: Confidence gate ───────────────────────────────────────────
     if decision is None or decision.get("action") == "skip":
         confidence = decision.get("confidence", 0) if decision else 0
         log.info(f"Claude skipped — confidence={confidence}")
@@ -319,8 +323,28 @@ async def main_loop(
         return
 
     confidence = decision.get("confidence", 0)
+
+    # Hard skip — too weak even for a suggestion
     if confidence < _CONFIDENCE_HARD_SKIP:
         log.info(f"Confidence {confidence} < {_CONFIDENCE_HARD_SKIP} (hard skip) — skip")
+        metrics.update_claude_decision("skip", confidence)
+        metrics.record_skip()
+        return
+
+    # Suggestion band: 50–64 — surface to human via /markets, do NOT trade
+    if confidence < _CONFIDENCE_MIN_TRADE:
+        # Get current price for suggestion entry zone
+        entry_price = 0.0
+        market = decision.get("market", "")
+        for snap in market_snapshots:
+            if snap.get("market") == market:
+                entry_price = snap.get("price", 0.0)
+                break
+        suggestion_store.add(decision, entry_price)
+        log.info(
+            f"Suggestion added: {market} {decision.get('direction')} "
+            f"conf={confidence} (50–64 band — not traded)"
+        )
         metrics.update_claude_decision("skip", confidence)
         metrics.record_skip()
         return
@@ -437,6 +461,7 @@ async def run() -> None:
     order_router       = OrderRouter(config)
     outcome_logger     = OutcomeLogger(db)
     metrics            = PrometheusExporter(config)
+    suggestion_store   = SuggestionStore()
 
     # ── Start Prometheus metrics server (port 8080) ────────────────────────
     metrics.start_server(port=8080)
@@ -449,6 +474,7 @@ async def run() -> None:
         circuit_breaker=circuit_breaker,
         capital_tracker=capital_tracker,
         order_router=order_router,
+        suggestion_store=suggestion_store,
     )
     await telegram.start()
     log.info("✅ Telegram bot started")
@@ -509,6 +535,7 @@ async def run() -> None:
         order_router=order_router,
         outcome_logger=outcome_logger,
         metrics=metrics,
+        suggestion_store=suggestion_store,
     )
     scheduler.start()
     log.info("✅ Scheduler started — NANORCA fully operational")

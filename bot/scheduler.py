@@ -29,6 +29,7 @@ def build_scheduler(
     order_router,
     outcome_logger,
     metrics,
+    suggestion_store=None,
 ) -> AsyncIOScheduler:
     """Build and return the configured APScheduler instance (not yet started)."""
     from main import main_loop
@@ -60,6 +61,7 @@ def build_scheduler(
             outcome_logger=outcome_logger,
             telegram=telegram,
             metrics=metrics,
+            suggestion_store=suggestion_store,
         ),
     )
 

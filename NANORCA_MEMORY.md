@@ -8,7 +8,7 @@
 ## 1. What Is This Project
 
 NANORCA is an autonomous crypto trading bot built with:
-- **Python AI brain** — Claude Haiku makes trading decisions
+- **Python AI brain** — Claude Haiku or claude sonet when needed makes trading decisions
 - **Go executor** — fast exchange I/O, WebSocket feeds, order execution
 - **PostgreSQL + TimescaleDB** — trade history, signal weights, learning data
 - **Prometheus + Grafana** — real-time dashboard (localhost:3000 or VPS_IP:3000)
@@ -33,7 +33,7 @@ NANORCA is an autonomous crypto trading bot built with:
 | Live trading | 🔒 LOCKED until 14-day paper win rate ≥ 60% |
 
 **What the bot does right now:**
-1. Scans top-20 Binance USDT futures pairs by volume every 60 seconds
+1. Scans top-25 Binance USDT futures pairs by volume every 60 seconds
 2. Pre-filter checks if any signal crosses threshold before calling Claude
 3. If market is quiet → skips Claude call (saves API cost)
 4. If signals fire → calls Claude Haiku → gets trading decision
@@ -150,15 +150,20 @@ Every 60 seconds:
 
 ---
 
-## 6. Confidence → Position Size (Graduated)
+## 6. Confidence → Action (Updated)
 
-| Confidence | Size | Meaning |
+| Confidence | Action | Size |
 |---|---|---|
-| < 55 | 0% — hard skip | Signal too weak |
-| 55–64 | 1% of capital | Tiny — real learning data at low confidence |
-| 65–79 | 3% of capital | Normal signal |
-| 80–89 | 5% of capital | Strong signal |
-| 90+ | 5% + high_conviction flag | Exceptional |
+| < 50 | Hard skip — nothing logged | 0% |
+| 50–64 | **Suggestion only** — surfaced via /markets, NOT traded | 0% |
+| 65–79 | Trade — normal | 3% of capital |
+| 80–89 | Trade — full | 5% of capital |
+| 90+ | Trade — max + high_conviction flag | 5% of capital |
+
+**Why 50–64 is now suggestions instead of 1% trades:**
+The human checks `/markets` or `/readmarkets` and can manually act on these.
+The bot does not risk capital on low-confidence signals. Learning data
+comes from the 65+ trades only.
 
 ---
 
@@ -181,7 +186,8 @@ Never market orders. Never spot for short-term holds.
 | `/status` | All | Bot state, capital, mode, open positions |
 | `/capital` | All | Tradeable USDT, locked coins, portfolio breakdown |
 | `/positions` | All | Current open positions with entry/size |
-| `/markets` | All | Top markets being scanned right now |
+| `/markets` | All | Market suggestions (50–64 conf) + live top prices |
+| `/readmarkets` | All | Alias for `/markets` — same output |
 | `/report` | All | Today's P&L, win rate, trade count |
 | `/history` | All | Last 10 closed trades |
 | `/learning` | All | Last weekly learning report |
@@ -259,6 +265,43 @@ MIN_GROSS_MOVE_PCT=0.09         # Fee break-even gate
 MAX_POSITION_PCT=20             # % of capital per trade (high for $12 testing)
 CAPITAL_FLOOR_PCT=25            # Emergency stop level
 ```
+
+---
+
+## 11b. Future Feature: Dynamic Priority Markets + /check TOKEN
+
+### What was requested (not yet implemented)
+The user wants:
+1. Priority markets to be **dynamic** — auto-updated based on trending/high-volume coins from each scan cycle, not the static `.env` list
+2. `/check TOKEN/USDT` — manually add a coin to priority list for deeper scanning
+3. **Max 15 priority slots** — when full and user adds a new one, bot asks which to remove
+4. **History** — remember which coins were removed and when, with reason
+
+### Implementation plan (Phase 4 or later)
+```
+/check INJUSDT
+→ Bot: "INJUSDT added to priority scan. Priority list now 8/15:
+        [ETH, SOL, BNB, DOGE, ADA, AVAX, LINK, INJ]"
+
+/check APTUSDT  (when at 15 limit)
+→ Bot: "Priority list is full (15/15). Which would you remove?
+        Least active in last 7 days: DOTUSDT (0 signals, last scanned 3d ago)
+        Type /removepriority DOTUSDT to confirm."
+
+/removepriority DOTUSDT
+→ Bot: "DOTUSDT removed. Reason: replaced by APTUSDT on 2026-05-20.
+        APTUSDT added. Priority: 15/15."
+```
+
+### Dynamic auto-update (Phase 5+)
+Every Sunday during weekly learning:
+- Scanner ranks all 25 top markets by signal quality (win rate × volume × momentum variance)
+- Top 10 auto-replace lowest-performing 10 priority slots
+- User gets Telegram report: "Priority updated: removed [X, Y] added [A, B]"
+
+### Storage needed
+- `priority_markets` table in PostgreSQL: symbol, added_at, added_by (user/auto), removed_at, removed_reason
+- Currently: static list in `.env` — acceptable for Phase 1
 
 ---
 
@@ -383,6 +426,11 @@ command: >
 | 2026-05-14 | Max 3 parallel positions, formatted Telegram broadcast | risk_manager.py, main.py |
 | 2026-05-14 | Spot suggestion from Claude (manual only, not executed) | claude_brain.py, main.py |
 | 2026-05-14 | Grafana: three-bucket capital panel, trade history from PostgreSQL | nanorca.json |
+| 2026-05-14 | Suggestion store: 50–64 confidence → /markets advisory (not traded) | suggestion_store.py, main.py, telegram_bot.py |
+| 2026-05-14 | /readmarkets alias added; /markets redesigned with suggestions + prices | telegram_bot.py |
+| 2026-05-14 | Min trade confidence raised to 65; removed 1% confidence tier | risk_manager.py, main.py |
+| 2026-05-14 | BINANCE_SCAN_TOP_N increased to 25 | .env |
+| 2026-05-14 | Documented future /check TOKEN + dynamic priority market system | NANORCA_MEMORY.md |
 
 ---
 

@@ -58,18 +58,15 @@ class RiskManager:
     @staticmethod
     def _graduated_size_pct(confidence: int) -> float:
         """
-        Maps confidence tier to max position size % (strategy doc Part 6).
-        55-64 → 1% (tiny: real learning data at low confidence)
-        65-79 → 3% (normal)
-        80-89 → 5% (full)
+        Maps confidence tier to max position size %.
+        50-64 → suggestion only (handled upstream in main.py, never reaches here)
+        65-79 → 3% (normal trade)
+        80-89 → 5% (full trade)
         90+   → 5% (max; high_conviction flag set separately)
-        Below 55 is blocked upstream in main.py before reaching here.
         """
         if confidence >= 80:
             return 5.0
-        if confidence >= 65:
-            return 3.0
-        return 1.0  # 55-64 band: tiny position for calibration data
+        return 3.0  # 65-79 band
 
     async def approve(
         self,
@@ -84,9 +81,9 @@ class RiskManager:
         """
         confidence = decision.get("confidence", 0)
 
-        # Safety net — main.py should already block below 55
-        if confidence < 55:
-            return False, f"Confidence {confidence} < 55 (hard skip)"
+        # Safety net — main.py routes 50-64 to suggestions, only 65+ reaches here
+        if confidence < 65:
+            return False, f"Confidence {confidence} < 65 — should be suggestion not trade"
 
         # Parallel position cap — never exceed MAX_OPEN_POSITIONS simultaneously
         if open_positions_count >= MAX_OPEN_POSITIONS:

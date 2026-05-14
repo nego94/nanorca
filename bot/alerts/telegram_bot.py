@@ -19,12 +19,13 @@ log = logging.getLogger("nanorca.alerts.telegram")
 class TelegramBot:
     """Telegram bot for owner notifications and two-way command interface."""
 
-    def __init__(self, config, db, circuit_breaker, capital_tracker, order_router) -> None:
+    def __init__(self, config, db, circuit_breaker, capital_tracker, order_router, suggestion_store=None) -> None:
         self._config = config
         self._db = db
         self._cb = circuit_breaker
         self._cap = capital_tracker
         self._router = order_router
+        self._suggestions = suggestion_store
         self._app: Application | None = None
 
     async def start(self) -> None:
@@ -43,6 +44,7 @@ class TelegramBot:
             ("capital",      self._cmd_capital),
             ("positions",    self._cmd_positions),
             ("markets",      self._cmd_markets),
+            ("readmarkets",  self._cmd_markets),
             ("history",      self._cmd_history),
             ("learning",     self._cmd_learning),
             ("setfloor",     self._cmd_setfloor),
@@ -231,28 +233,39 @@ class TelegramBot:
             await update.message.reply_text(f"❌ Could not fetch positions: {e}")
 
     async def _cmd_markets(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        """Show live market prices fetched from Go executor."""
+        """Show market suggestions (50-64 confidence) + top live prices."""
         if not self._is_authorized(update): await self._deny(update); return
-        try:
-            snapshots = await self._router.scan_markets(["BTC", "ETH", "SOL"])
-            if not snapshots:
-                await update.message.reply_text("📡 No market data yet — executor may still be warming up.")
-                return
-            lines = []
-            for s in snapshots:
-                ex = s.get("exchange", "?")
-                market = s.get("market", "?")
-                price = s.get("price", 0)
-                fr = s.get("funding_rate", 0)
-                avail = "✅" if s.get("available") else "❌"
-                fr_str = f" fr:{fr*100:.4f}%" if fr else ""
-                lines.append(f"{avail} {ex.upper()} {market}: ${price:,.2f}{fr_str}")
+
+        # ── Part 1: Market suggestions (50–64 confidence band) ────────────
+        if self._suggestions:
+            suggestion_msg = self._suggestions.format_telegram(self._config.paper_trading)
+            await update.message.reply_text(suggestion_msg, parse_mode=ParseMode.MARKDOWN)
+        else:
             await update.message.reply_text(
-                "📊 *Live Market Prices:*\n" + "\n".join(lines),
+                "📊 *Market Suggestions*\nSuggestion store not initialised yet.",
                 parse_mode=ParseMode.MARKDOWN
             )
+
+        # ── Part 2: Live top prices from scanner ──────────────────────────
+        try:
+            priority = self._config.priority_markets[:10]
+            snapshots = await self._router.scan_markets(priority)
+            bn = [s for s in snapshots if s.get("exchange") == "binance" and s.get("available")]
+            if not bn:
+                await update.message.reply_text("📡 No live price data yet.")
+                return
+            lines = ["📡 *Live Prices (top scanned markets):*"]
+            for s in sorted(bn, key=lambda x: x.get("volume_24h", 0), reverse=True)[:10]:
+                market = s.get("market", "?")
+                price  = s.get("price", 0)
+                vol    = s.get("volume_24h", 0)
+                fr     = s.get("funding_rate", 0)
+                fr_str = f" | fr:{fr*100:.3f}%" if fr else ""
+                vol_str = f" | vol:${vol/1e6:.0f}M" if vol > 0 else ""
+                lines.append(f"  `{market}` ${price:,.4f}{fr_str}{vol_str}")
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
-            await update.message.reply_text(f"❌ Market scan error: {e}")
+            await update.message.reply_text(f"❌ Price scan error: {e}")
 
     async def _cmd_history(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update): await self._deny(update); return
@@ -369,7 +382,8 @@ class TelegramBot:
             "*Read-only (all members):*\n"
             "/status — State, real balances, plan\n"
             "/capital — Per-exchange balance detail\n"
-            "/markets — Live prices from all exchanges\n"
+            "/markets — Market suggestions (50–64 conf) + live prices\n"
+            "/readmarkets — Same as /markets\n"
             "/positions — Open paper/live trades\n"
             "/report [7d] — Trade P&L breakdown\n"
             "/history [n] — Last N trades\n"
