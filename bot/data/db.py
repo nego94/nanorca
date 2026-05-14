@@ -24,11 +24,21 @@ class Database:
         self._pool: asyncpg.Pool | None = None
 
     async def connect(self, min_size: int = 2, max_size: int = 10) -> None:
+        async def _init(conn):
+            # Register JSONB codec so asyncpg serializes Python dicts/lists automatically.
+            # Without this, asyncpg rejects lists/dicts for jsonb columns with "expected str".
+            await conn.set_type_codec(
+                "jsonb",
+                encoder=json.dumps,
+                decoder=json.loads,
+                schema="pg_catalog",
+            )
         self._pool = await asyncpg.create_pool(
             self._dsn,
             min_size=min_size,
             max_size=max_size,
             command_timeout=30,
+            init=_init,
         )
         log.info(f"DB pool connected (min={min_size}, max={max_size})")
 
