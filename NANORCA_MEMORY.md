@@ -493,20 +493,28 @@ command: >
 | 2026-05-14 | Feature: TELEGRAM_GROUP_CHAT_ID — broadcasts now go to both private chat and group if set | config.py, telegram_bot.py |
 | 2026-05-14 | Feature: PaperOrderBook — full paper trade lifecycle: PLANNED→FILLED→CLOSED with target/stop/timeout monitoring. P&L calculated in Python per close. DB saved on fill not on plan. | paper_order_book.py, main.py |
 | 2026-05-14 | Refactor: _manage_open_positions split into _process_paper_fills/_process_paper_exits (paper) and _manage_live_positions (live). Paper and live paths completely separate. | main.py |
+| 2026-05-14 | Fix: Go executor race condition — concurrent goroutines writing prices map → fatal crash. Fixed with sync.RWMutex protecting all prices map reads/writes. | binance.go |
+| 2026-05-14 | Fix: futuresWalletUSDT now reads WalletBalance (total) not AvailableBalance (free only) — prevents $0 when margin is locked by live positions | binance.go |
+| 2026-05-14 | Fix: balance failures upgraded from DEBUG → WARN logging so errors are visible in logs | binance.go |
+| 2026-05-14 | Fix: gRPC scan timeout 15s → 25s — 30 markets were timing out at 15s causing DEADLINE_EXCEEDED loop | order_router.py |
+| 2026-05-14 | Fix: gRPC auto-reconnect on UNAVAILABLE/INTERNAL errors — was broken forever until full bot restart | order_router.py |
+| 2026-05-14 | Fix: Prometheus holds last known metrics when executor is down (was zeroing Grafana on every outage) | prometheus_exporter.py |
+| 2026-05-14 | Fix: extra_markets cap 10 → 5 (top-25 auto + 5 manual = 30 total max per cycle) | extra_markets_store.py |
+| 2026-05-14 | Fix: startup capital sync retries up to 3× with 10s gap — executor not ready on first boot caused $10 showing at startup | main.py |
+| 2026-05-14 | Feature: config.binance_scan_top_n added — startup message now shows correct top-N (was hardcoded to 3) | config.py, main.py |
+| 2026-05-14 | Feature: /status shows USDT free + Total separately per exchange for full visibility | telegram_bot.py |
 
 ---
 
-## 17. Next Immediate Actions
+## 17. Current Status & Next Actions
 
-1. **Deploy latest code on VPS** — `git pull && docker compose build --no-cache bot && docker compose up -d bot`
-   - Scan timeout: 15s → 25s (handles 30 markets safely)
-   - Extra markets cap: 10 → 5 (top-25 auto + 5 manual = 30 total max)
-   - gRPC auto-reconnect when executor restarts
-   - Prometheus holds last known value when executor is down (no Grafana zeroes)
-   - Paper order lifecycle: PLANNED→FILLED→CLOSED with target/stop/timeout monitoring
-   - Also set on VPS: BINANCE_SCAN_TOP_N=25 (keep at 25, timeout is now safe)
-2. **Wait 24h** (user doing this 2026-05-14) — check if trades recorded: `/report` on Telegram + Grafana Trade History
-3. **If no trades** — `docker compose logs bot --since 24h | grep -E "Pre-filter|Claude|Trade"` to diagnose
+**Bot status as of 2026-05-14:** Running on VPS with all fixes deployed. Paper trading active.
+
+1. **Monitor for first paper trade** — bot will broadcast `📋 PLANNED`, `✅ FILLED`, then `🎉/❌/⏰` on close
+2. **Check Grafana trade history** — will populate once first trade closes (PLANNED→FILLED→CLOSED lifecycle)
+3. **Run `/report` daily** to watch win rate and P&L accumulate
+4. **Check Sunday 2026-05-18 00:00 UTC** — first weekly learning report fires
+5. **After 14+ days of profitable paper trading** → flip `PAPER_TRADING=false` on VPS and restart
 4. **Watch first paper trade** fire on Telegram (market needs to move > 0.30%)
 5. **Check Sunday learning report** — first auto-run 2026-05-18 00:00 UTC
 6. **Monitor daily** via `/report` on Telegram
