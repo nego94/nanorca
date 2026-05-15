@@ -100,6 +100,22 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=30d"
 
+  # ── NANORCA Dashboard (Next.js) ───────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: nanorca_dashboard
+    restart: unless-stopped
+    networks:
+      - nanorca
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      - postgres
+
   # ── Grafana ───────────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:latest

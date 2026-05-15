@@ -34,6 +34,11 @@ _PAPER_LEVERAGE = 3.0
 # Maker fee per side: 0.02%. Round-trip: 0.04%.
 _FEE_RATE = 0.0004
 
+# Trailing take profit: activates when price is ≥50% of the way to target.
+# If price then pulls back this % from the peak, the position closes to lock gains.
+_TRAIL_ACTIVATE_PCT = 0.50   # activate trailing at 50% progress toward target
+_TRAIL_DROP_PCT     = 0.30   # close if price drops 0.30% from peak
+
 
 @dataclass
 class PaperOrder:
@@ -54,6 +59,7 @@ class PaperOrder:
     filled_at: float | None = None
     fill_price: float | None = None
     status: str = "pending"   # pending | open | closed
+    peak_price: float | None = None   # tracks best price seen (for trailing stop)
 
     @property
     def notional_usd(self) -> float:
@@ -228,17 +234,40 @@ class PaperOrderBook:
             if current <= 0:
                 continue
 
+            entry = order.fill_price or order.entry_price
+
             if order.direction == "long":
                 hit_target = current >= order.target_price
                 hit_stop   = current <= order.stop_price
+                # Trailing: activate at 50% progress, close if drops 0.3% from peak
+                target_range = order.target_price - entry
+                progress = (current - entry) / target_range if target_range > 0 else 0
+                if progress >= _TRAIL_ACTIVATE_PCT:
+                    if order.peak_price is None or current > order.peak_price:
+                        order.peak_price = current
+                    trail_drop = (order.peak_price - current) / order.peak_price * 100
+                    hit_trail = trail_drop >= _TRAIL_DROP_PCT and current > entry
+                else:
+                    hit_trail = False
             else:
                 hit_target = current <= order.target_price
                 hit_stop   = current >= order.stop_price
+                target_range = entry - order.target_price
+                progress = (entry - current) / target_range if target_range > 0 else 0
+                if progress >= _TRAIL_ACTIVATE_PCT:
+                    if order.peak_price is None or current < order.peak_price:
+                        order.peak_price = current
+                    trail_drop = (current - order.peak_price) / order.peak_price * 100
+                    hit_trail = trail_drop >= _TRAIL_DROP_PCT and current < entry
+                else:
+                    hit_trail = False
 
             timed_out = order.hold_minutes >= self._max_hold_minutes
 
             if hit_target:
                 reason = "target_hit"
+            elif hit_trail:
+                reason = "trailing_stop"
             elif hit_stop:
                 reason = "stop_loss"
             elif timed_out:

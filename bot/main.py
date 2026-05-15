@@ -189,6 +189,8 @@ async def _process_paper_exits(
 
         if reason == "target_hit":
             result_emoji = "🎉 WIN"
+        elif reason == "trailing_stop":
+            result_emoji = "📈 WIN (trailing)"
         elif reason == "stop_loss":
             result_emoji = "❌ LOSS"
         else:
@@ -210,33 +212,6 @@ async def _process_paper_exits(
         metrics.record_trade_closed(order.exchange, win, pnl_usd, order.hold_minutes)
 
     paper_book.purge_closed()
-
-    # ── Periodic monitoring updates for still-open positions ─────────────
-    for order, current in paper_book.get_monitoring_updates(price_map):
-        entry = order.fill_price or order.entry_price
-        if order.direction == "long":
-            unreal_pct = (current - entry) / entry * 100
-            to_target   = (order.target_price - current) / current * 100
-            to_stop     = (current - order.stop_price) / current * 100
-            status_icon = "🟢" if current > entry else "🔴"
-        else:
-            unreal_pct = (entry - current) / entry * 100
-            to_target   = (current - order.target_price) / current * 100
-            to_stop     = (order.stop_price - current) / current * 100
-            status_icon = "🟢" if current < entry else "🔴"
-
-        unreal_usd = unreal_pct / 100 * order.notional_usd
-        pct_to_target = min(100, max(0, (unreal_pct / order.target_pct) * 100)) if order.target_pct > 0 else 0
-
-        await telegram.send_info(
-            f"📡 [PAPER] MONITORING {order.direction.upper()} {order.market}\n"
-            f"─────────────────────\n"
-            f"⏱ Hold: {order.hold_minutes:.0f} min / {paper_book._max_hold_minutes} min max\n"
-            f"📍 Entry: `${entry:.4f}` → Now: {status_icon} `${current:.4f}`\n"
-            f"💹 Unrealized: `{unreal_pct:+.2f}%` | P&L est: `${unreal_usd:+.4f}`\n"
-            f"🎯 Target `${order.target_price:.4f}` — {pct_to_target:.0f}% of way there\n"
-            f"🛑 Stop `${order.stop_price:.4f}` — {to_stop:.2f}% buffer remaining"
-        )
 
 
 async def _manage_live_positions(
@@ -465,6 +440,17 @@ async def main_loop(
         )
         metrics.record_skip()
         return
+
+    # ── Step 5d: BTC confidence gate ──────────────────────────────────────
+    # If BTC is dumping hard, suppress LONG signals — altcoins follow BTC down.
+    btc_momentum = signal_builder.get_market_momentum_pct("BTCUSDT")
+    signals["_btc_momentum_pct"] = btc_momentum
+    if btc_momentum < -0.8:
+        momentum_bias = signals.get("binance_momentum", {}).get("direction_bias", "neutral")
+        if momentum_bias != "short":
+            log.info(f"BTC gate: BTC {btc_momentum:+.2f}% — suppressing LONG entries, skipping Claude call")
+            metrics.record_skip()
+            return
 
     # ── Step 6: Ask Claude for a decision ─────────────────────────────────
     try:

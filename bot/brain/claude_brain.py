@@ -37,6 +37,18 @@ Your job: analyze the market data below and decide whether to trade.
 - Consecutive wins/losses: {streak}
 - Capital vs floor: ${current_capital} / ${floor_capital} ({pct_from_floor}% above floor)
 
+## MARKET CONDITIONS
+BTC 10-min momentum: {btc_momentum:+.3f}%
+  → If BTC < -0.5%: market is dumping — avoid LONG entries, prefer SKIP or SHORT only
+  → If BTC > +0.3%: bullish bias — favour LONG entries on strong altcoin signals
+  → If BTC -0.3% to +0.3%: neutral — rely on altcoin-specific signals
+
+Volatility regime: {vol_regime} ({vol_pct:.3f}% avg altcoin 10-min range)
+  → LOW  (<0.3%): Tight ranges. Set target_profit_pct = 0.3–0.5%, stop_loss_pct = 1.5–2.0%
+  → MED  (0.3–0.8%): Normal. Set target_profit_pct = 0.5–1.0%, stop_loss_pct = 1.5–2.5%
+  → HIGH (>0.8%): Wide swings. Set target_profit_pct = 0.8–1.5%, stop_loss_pct = 2.0–3.0%
+  In HIGH volatility a trailing stop activates at 50% progress toward target — set a bigger target.
+
 ## CAPITAL CONTEXT — READ THIS BEFORE CHOOSING A MARKET
 - Available USDT (futures margin): ~${current_capital:.2f}
 - Max position per trade: {max_position_pct}% = ~${max_position_usd:.2f} USDT margin
@@ -130,6 +142,11 @@ class ClaudeBrain:
         max_position_usd = current_capital * (max_position_pct / 100)
         max_notional_usd = max_position_usd * 3  # Binance hard cap is 3x
 
+        vol_signal  = signals.get("volatility_regime", {})
+        vol_regime  = vol_signal.get("regime", "unknown")
+        vol_pct     = float(vol_signal.get("raw_value", 0.0))
+        btc_momentum = float(signals.get("_btc_momentum_pct", 0.0))
+
         prompt = DECISION_PROMPT_TEMPLATE.format(
             market_data_json=json.dumps(signals, indent=2),
             signal_weights_json=json.dumps(signal_weights, indent=2),
@@ -145,6 +162,9 @@ class ClaudeBrain:
             max_position_pct=max_position_pct,
             max_position_usd=max_position_usd,
             max_notional_usd=max_notional_usd,
+            btc_momentum=btc_momentum,
+            vol_regime=vol_regime,
+            vol_pct=vol_pct,
         )
 
         try:

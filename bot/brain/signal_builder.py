@@ -109,6 +109,9 @@ class SignalBuilder:
                 market_snapshots, signal_weights.get("volume_spike", 0.05)
             )
 
+        # ── Volatility regime (derived from price history, not exchange-gated) ──
+        signals["volatility_regime"] = self._build_volatility_signal()
+
         # ── Raw snapshots for Claude context (only enabled exchanges) ──────
         enabled_snaps = [s for s in market_snapshots if s.get("exchange") in enabled]
         signals["_raw_snapshots"] = enabled_snaps[:15]
@@ -270,6 +273,56 @@ class SignalBuilder:
                 f"Binance momentum: {best_momentum_pct:+.2f}% on {best_market}"
             ),
         }
+
+    def _build_volatility_signal(self) -> dict:
+        """
+        Compute altcoin volatility regime from rolling price history.
+
+        Low  (<0.3% avg range) → use small targets (0.3–0.5%)
+        Med  (0.3–0.8%)        → standard targets (0.5–1.0%)
+        High (>0.8%)           → wide targets (0.8–1.5%), trailing stop activates
+        """
+        ranges = []
+        for market, history in self._price_history.items():
+            if "BTC" in market or "ETH" in market:
+                continue  # exclude market-direction coins from altcoin vol calc
+            if len(history) < 3:
+                continue
+            prices = [p for p, _ in history]
+            price_range_pct = (max(prices) - min(prices)) / min(prices) * 100
+            ranges.append(price_range_pct)
+
+        if not ranges:
+            return {
+                "raw_value": 0.0, "normalized": 0.5,
+                "fired": False, "regime": "unknown",
+                "description": "Volatility (insufficient price history — warming up)",
+            }
+
+        avg_range_pct = sum(ranges) / len(ranges)
+        regime = "low" if avg_range_pct < 0.3 else ("high" if avg_range_pct > 0.8 else "medium")
+        normalized = min(1.0, avg_range_pct / 1.5)
+
+        return {
+            "raw_value": round(avg_range_pct, 4),
+            "normalized": round(normalized, 4),
+            "fired": regime == "high",
+            "regime": regime,
+            "markets_sampled": len(ranges),
+            "description": f"Altcoin volatility: {avg_range_pct:.3f}% avg 10-min range ({regime})",
+        }
+
+    def get_market_momentum_pct(self, market: str) -> float:
+        """Return current momentum % for a specific market from price history. Used for BTC gate."""
+        history = self._price_history.get(market, [])
+        if len(history) < 2:
+            return 0.0
+        oldest_price, oldest_ts = history[0]
+        newest_price, _ = history[-1]
+        now = time.monotonic()
+        if now - oldest_ts < _MOMENTUM_MIN_AGE_S or oldest_price == 0:
+            return 0.0
+        return (newest_price - oldest_price) / oldest_price * 100
 
     def _build_volume_spike_signal(self, all_snaps: list[dict], weight: float) -> dict:
         """
