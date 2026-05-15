@@ -580,6 +580,8 @@ command: >
 | 2026-05-15 | DB fix: manually closed 10 stuck "open" trades (AIUSDT ×5, XRP, ZEC, INJ, SAGA, SOL) from 02:00-06:57 session using SQL UPDATE with actual P&L from Telegram. All had correct fills saved but closes failed due to type bug. | VPS SQL |
 | 2026-05-15 | Feature: /report now defaults to all-time stats (since 2020-01-01). Filtered views: /report 24h, /report 7d, /report 30d. Shows avg win/loss, fees, paper/live split. /history defaults to 20 (was 10), max 100. Paper/live emoji per trade row. Usage hints added. | telegram_bot.py |
 | 2026-05-15 | Documented: profitability break-even analysis ($125/mo overhead, need $1,000–2,000 capital for real profit, optimize to 90s scan after baseline). Grid bot architecture designed: Binance managed grid API (Option A) + manual limit order grid (Option B), Go executor handles fills event-driven, Python activates/monitors only. | NANORCA_MEMORY.md |
+| 2026-05-15 | Planned: Phase B (Grid Bot, ~3.5 weeks) — B1 ranging detection (ATR/BB signals + Claude GRID action), B2 Go grid engine (WebSocket fill-reactive), B3 Python activation/monitoring, B4 DB tables (grid_sessions/grid_orders), B5 Telegram /grid commands. Phase C (Web Dashboard, ~4.5 weeks) — FastAPI backend, React+Vite frontend, TradingView charts, settings management, grid UI, Docker+Nginx deploy. Full plan in Sections 19–20. | NANORCA_MEMORY.md |
+| 2026-05-15 | Capital analysis: at $100 trading capital → still -$60 to -$90/month with current $125/mo overhead. Breakeven at ~$150–200 capital with optimized (90s scan) costs. Real profit starts at $1k+ capital. | NANORCA_MEMORY.md |
 
 ---
 
@@ -694,9 +696,368 @@ Phase B (after 14-day paper baseline confirmed). Build Option A first (Binance m
 
 ---
 
-## 19. Current Status & Roadmap
+## 19. Phase B — Grid Trading Roadmap
 
-**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading stable. Paper capital ~$13.13 (persists across restarts via DB snapshot). 26 trades in DB (73.1% WR, +$2.63 paper P&L). /report now defaults to all-time stats, /history defaults to 20. /status shows correct 24h P&L from DB, correct % from actual starting capital, correct 3x paper leverage. Real account ($3-4 Binance) and paper simulation fully separated. Current monthly overhead ~$125 (Claude API ~$100 + VPS $25). See Section 17 for break-even analysis — need $1,000–2,000 capital for real profit.
+### Overview
+Grid bot earns on sideways/ranging markets where the momentum bot sits idle. Claude detects ranging conditions → activates a grid → Go executor manages all fills event-driven → Python monitors health every 60s.
+
+**Total estimated build time: 3–4 weeks**
+
+---
+
+### B1 — Ranging Market Detection (Week 1)
+
+**What needs to change:**
+
+`bot/brain/signal_builder.py` — add ranging signals:
+```python
+# ATR-based ranging detection
+atr = high_low_range / price  # true range proxy from OHLCV
+atr_ratio = atr / avg_atr_14  # normalized: <0.7 = calm, >1.3 = volatile
+# Bollinger Band squeeze: (upper - lower) / mid < threshold
+bb_width = (bb_upper - bb_lower) / bb_mid
+# Mean reversion: price oscillating around moving average
+mean_deviation_pct = abs(price - ema_20) / ema_20 * 100
+```
+
+New signals added to signal dict:
+- `atr_ratio`: float — <0.8 means ranging, >1.2 means trending
+- `bb_squeeze`: bool — True when Bollinger Bands are tight (ranging)
+- `price_mean_deviation_pct`: float — small = ranging around mean
+
+**Claude prompt update** (`bot/brain/claude_brain.py`):
+- Add ranging signal values to the market context block
+- Add instruction: "If atr_ratio < 0.8 AND bb_squeeze=True → recommend action=GRID instead of LONG/SHORT"
+- Claude response now includes `action: "GRID"` as possible output (alongside LONG/SHORT/SKIP)
+- Grid-specific fields in Claude response: `grid_upper`, `grid_lower`, `grid_levels`, `grid_budget_pct`
+
+**Files to change:** `signal_builder.py`, `claude_brain.py`, `main.py` (handle action=GRID routing)
+
+---
+
+### B2 — Go Grid Engine (Week 1.5–2)
+
+New Go package: `executor/internal/grid/`
+
+```
+grid/
+├── manager.go      — GridManager: lifecycle (start/stop/status per market)
+├── engine.go       — places grid orders, reacts to fills, replaces orders
+└── types.go        — GridSession, GridOrder structs
+```
+
+**gRPC additions** (`proto/nanorca.proto`):
+```protobuf
+rpc StartGrid(StartGridRequest) returns (StartGridResponse);
+rpc StopGrid(StopGridRequest)  returns (StopGridResponse);
+rpc GetGridStatus(GridStatusRequest) returns (GridStatusResponse);
+```
+
+**StartGrid flow (Go):**
+1. Calculate N price levels between lower and upper
+2. Place N buy limit orders below current price
+3. Place N sell limit orders above current price
+4. WebSocket fill listener: when buy fills → place sell at next level up; when sell fills → place buy at next level down
+5. Track realized P&L per grid session
+
+**Fill detection:** Reuse existing WebSocket feed (`ws_feed.go`) — add order fill event listener. Fills trigger immediate order replacement within milliseconds. Python never involved in individual fills.
+
+**StopGrid flow:**
+1. Cancel all open grid orders via `DELETE /fapi/v1/allOpenOrders`
+2. Close any residual position at market
+3. Mark session as closed, return final P&L
+
+**Files to add:** `executor/internal/grid/` package, update `executor/pkg/grpcserver/server.go`, update `proto/nanorca.proto`
+
+---
+
+### B3 — Python Grid Activation & Monitoring (Week 2)
+
+**`bot/data/paper_grid_book.py`** (new file):
+- Paper grid emulator: mirrors Go grid logic in Python for paper mode
+- Places simulated grid orders, checks price on each cycle
+- Calculates grid P&L from fills
+- Separate from PaperOrderBook (different trade type)
+
+**`bot/main.py`** updates:
+```python
+# In main trading cycle, after Claude decision:
+if result["action"] == "GRID":
+    if config.paper_trading:
+        paper_grid_book.activate(market, result)
+    else:
+        await router.start_grid(market, result)  # calls Go gRPC
+
+# Grid health check (every 60s, not every fill):
+async def _check_grid_health():
+    for market, session in active_grids.items():
+        status = await router.get_grid_status(market)
+        # If price breaks out of grid range → stop grid
+        if price > session.upper * 1.02 or price < session.lower * 0.98:
+            await router.stop_grid(market)
+            telegram.send_info(f"Grid stopped: {market} broke out of range")
+```
+
+**`bot/learning/outcome_logger.py`** — add `log_grid_session_closed()` method
+
+---
+
+### B4 — Database Tables (2 days)
+
+**New migration:** `migrations/004_grid_tables.sql`
+```sql
+CREATE TABLE grid_sessions (
+    id          SERIAL PRIMARY KEY,
+    market      TEXT NOT NULL,
+    exchange    TEXT NOT NULL DEFAULT 'binance',
+    upper_price NUMERIC(20,8) NOT NULL,
+    lower_price NUMERIC(20,8) NOT NULL,
+    levels      INT NOT NULL,
+    budget_usd  NUMERIC(12,4) NOT NULL,
+    paper       BOOLEAN NOT NULL DEFAULT TRUE,
+    status      TEXT NOT NULL DEFAULT 'active',  -- active/stopped/completed
+    realized_pnl NUMERIC(12,4) DEFAULT 0,
+    fill_count  INT DEFAULT 0,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    stopped_at  TIMESTAMPTZ,
+    stop_reason TEXT   -- 'breakout', 'manual', 'timeout', 'floor_hit'
+);
+
+CREATE TABLE grid_orders (
+    id              SERIAL PRIMARY KEY,
+    session_id      INT REFERENCES grid_sessions(id),
+    level           INT NOT NULL,
+    side            TEXT NOT NULL,  -- 'BUY' or 'SELL'
+    price           NUMERIC(20,8) NOT NULL,
+    size_usd        NUMERIC(12,4) NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open',  -- open/filled/cancelled
+    filled_at       TIMESTAMPTZ,
+    pnl_usd         NUMERIC(12,4),
+    exchange_order_id TEXT
+);
+```
+
+---
+
+### B5 — Telegram Grid Commands (2 days)
+
+| Command | Function |
+|---|---|
+| `/grid` | List active grids: market, range, P&L, fill count |
+| `/grid SYMBOL` | Status of specific market grid |
+| `/grid stop SYMBOL` | Manually stop a grid |
+| `/grid history` | Last 10 closed grid sessions with P&L |
+
+Added to `telegram_bot.py` as `_cmd_grid()`.
+
+---
+
+### Grid Budget Separation
+- Momentum bot: uses `capital_tracker.current_capital`
+- Grid bot: separate `GRID_BUDGET_PCT` env var (e.g. 30% of capital reserved for grids)
+- At $100 capital: 70% momentum ($70) + 30% grid ($30, spread across max 5 grids)
+- Grid P&L feeds back into `capital_tracker` on session close
+
+---
+
+## 20. Phase C — Web Dashboard Roadmap
+
+### Why Replace Grafana
+Grafana is excellent for charts but cannot:
+- Change bot settings (scan interval, thresholds, floor %)
+- Start/stop grids interactively
+- Show live positions with controls
+- Be easily customized without JSON panel editing
+
+The web app replaces Grafana's control functions but **can embed Grafana panels** (via iframe) for complex time-series charts while keeping the UI clean.
+
+**Total estimated build time: 4–6 weeks**
+
+---
+
+### Tech Stack
+
+| Layer | Choice | Reason |
+|---|---|---|
+| Backend | **FastAPI** (Python) | Same language as bot, WebSocket support, async |
+| Frontend | **React + Vite** | Fast dev, Claude can generate it easily, large ecosystem |
+| Charts | **TradingView Lightweight Charts** (free) | Professional candlestick/line charts, no license cost |
+| Styling | **Tailwind CSS** | Utility-first, fast to build, no design system needed |
+| Real-time | **WebSocket** (FastAPI → React) | Live price/position/capital updates without polling |
+| Auth | **Single bearer token** in `.env` | One owner, no multi-user complexity |
+| Deploy | **Docker service** + Nginx proxy | Fits existing infra (NPM already running) |
+
+---
+
+### C1 — Backend API (Week 1)
+
+New service: `dashboard/` directory (Python FastAPI app, separate Docker service)
+
+```
+dashboard/
+├── main.py           — FastAPI app, CORS, auth middleware
+├── api/
+│   ├── status.py     — GET /api/status (bot state, capital, positions)
+│   ├── trades.py     — GET /api/trades, GET /api/report
+│   ├── settings.py   — GET/POST /api/settings (read/write .env safely)
+│   ├── grid.py       — GET/POST/DELETE /api/grid (list/start/stop)
+│   └── ws.py         — WebSocket /ws (live feed: prices, fills, alerts)
+├── db.py             — Shared asyncpg pool (same PostgreSQL)
+├── config.py         — Reads same .env as bot
+└── Dockerfile
+```
+
+**Settings management approach:** API reads `.env`, writes safe subset back. Only allows changing: `SCAN_INTERVAL_SECONDS`, `CONFIDENCE_THRESHOLD`, `MAX_OPEN_POSITIONS`, `CAPITAL_FLOOR_PCT`, `TRADING_MODE`, `GRID_BUDGET_PCT`. Never writes `BINANCE_API_KEY`, `TELEGRAM_*`, passwords.
+
+After settings change → API calls `docker compose restart bot` via subprocess (bot container has Docker socket access with read-only mount).
+
+---
+
+### C2 — Frontend Pages (Week 2–3)
+
+```
+dashboard/frontend/
+├── src/
+│   ├── pages/
+│   │   ├── Dashboard.jsx    — Overview: capital, bot state, active positions
+│   │   ├── Trades.jsx       — Trade history table with filters
+│   │   ├── Report.jsx       — P&L charts, win rate over time
+│   │   ├── Grid.jsx         — Active grids, start new grid, grid history
+│   │   ├── Markets.jsx      — Live scanned markets, suggestions
+│   │   └── Settings.jsx     — Bot settings form with save/restart
+│   ├── components/
+│   │   ├── CapitalCard.jsx  — Current capital, floor, % change
+│   │   ├── PositionRow.jsx  — Single position with unrealized P&L
+│   │   ├── GridCard.jsx     — Single grid session with fill count
+│   │   └── LiveChart.jsx    — TradingView chart for price history
+│   └── hooks/
+│       └── useWebSocket.js  — Real-time data subscription
+```
+
+**Dashboard page layout:**
+```
+┌─────────────────────────────────────────────────┐
+│ 📄 Paper: $13.42  💳 Real: $3.81  🤖 Running   │
+│ 24h P&L: +$0.87  WR: 73.1%  Open: 2/3          │
+├──────────────────────┬──────────────────────────┤
+│ OPEN POSITIONS       │ ACTIVE GRIDS              │
+│ SAGAUSDT LONG $0.34  │ XRPUSDT 0.62-0.68        │
+│ unrealized +$0.12    │ 14 fills, +$0.43          │
+├──────────────────────┴──────────────────────────┤
+│ RECENT TRADES (last 5)                           │
+│ ✅ AIUSDT +$0.21  ❌ INJUSDT -$0.38  ✅ ...    │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+### C3 — Settings Management (Week 3)
+
+**Settings page:** Form with current values pre-filled. Changing any value shows a "Save & Restart Bot" button. On save:
+1. API writes new values to `.env`
+2. API triggers `docker compose up -d --build bot` (if code change) or `docker compose restart bot` (env-only change)
+3. WebSocket broadcasts "Bot restarting..." → UI shows spinner
+4. WebSocket broadcasts "Bot online" when heartbeat resumes
+
+**Editable settings from UI:**
+- Scan interval (slider: 30s / 60s / 90s / 120s)
+- Confidence threshold (slider: 55–75)
+- Max open positions (1 / 2 / 3)
+- Capital floor % (slider: 15–40%)
+- Trading mode (dropdown: nanorca_decide / conservative / hybrid / aggressive)
+- Grid budget % (slider: 0–50%)
+- Per-market cooldown minutes (slider: 5–60 min)
+
+---
+
+### C4 — Grid Management UI (Week 4)
+
+**Grid page:**
+- Table of active grids: market, range, levels, fills, realized P&L, time running
+- "Stop" button per grid
+- "New Grid" modal: pick market, set upper/lower price (or let Claude suggest), levels (6/10/15), budget
+- Grid history: past sessions, P&L, fill count
+
+**New Grid modal flow:**
+1. User picks market (dropdown of scanned markets)
+2. Click "Analyze" → API calls Claude on-demand to suggest range/levels
+3. Claude returns suggested upper/lower based on recent ATR + support/resistance
+4. User can override any field
+5. "Start Grid" → API calls Go gRPC StartGrid
+
+---
+
+### C5 — Deploy (2 days)
+
+**`dashboard/Dockerfile`:**
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+# Build frontend
+FROM node:20-slim AS frontend
+WORKDIR /frontend
+COPY frontend/package.json .
+RUN npm install
+COPY frontend/ .
+RUN npm run build
+# Copy built frontend to FastAPI static files
+COPY --from=frontend /frontend/dist /app/static
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8090"]
+```
+
+**`docker-compose.yml`** — add dashboard service:
+```yaml
+dashboard:
+  build: ./dashboard
+  ports: ["8090:8090"]
+  environment:
+    - DATABASE_URL=${DATABASE_URL}
+    - DASHBOARD_SECRET=${DASHBOARD_SECRET}
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock:ro  # for restart bot
+    - ./.env:/app/.env                               # for settings write
+  depends_on: [postgres]
+  restart: unless-stopped
+```
+
+**Nginx Proxy Manager:** Add new proxy host `nanorca-admin.creativorium.com` → port 8090, Let's Encrypt SSL.
+
+**`.env` additions:**
+```bash
+DASHBOARD_SECRET=<random 32-char token>  # bearer token for API auth
+DASHBOARD_PORT=8090
+```
+
+---
+
+### Phase Summary & Timeline
+
+| Phase | Deliverable | Estimated Time |
+|---|---|---|
+| **B1** | Ranging detection signals + Claude prompt update | 1 week |
+| **B2** | Go grid engine (orders, fills, WebSocket) | 1.5 weeks |
+| **B3** | Python grid activation + paper grid book | 0.5 week |
+| **B4** | DB tables (grid_sessions, grid_orders) | 2 days |
+| **B5** | Telegram grid commands | 2 days |
+| **— Phase B total —** | **Full grid trading** | **~3.5 weeks** |
+| **C1** | FastAPI backend (REST + WebSocket) | 1 week |
+| **C2** | React frontend (Dashboard, Trades, Report) | 1.5 weeks |
+| **C3** | Settings management + bot restart | 0.5 week |
+| **C4** | Grid UI (active grids, new grid modal) | 1 week |
+| **C5** | Docker deploy + Nginx SSL | 2 days |
+| **— Phase C total —** | **Full web dashboard** | **~4.5 weeks** |
+| **TOTAL** | Grid bot + Web app | **~8 weeks** |
+
+**Start order:** B1 → B2 → B3 → B4 → B5 (grid) then C1 → C2 → C3 → C4 → C5 (web app). Do not start Phase C until Phase B is paper-tested for at least 1 week.
+
+---
+
+## 21. Current Status & Roadmap
+
+**Bot status as of 2026-05-15:** Running 24/7 on VPS. Paper trading stable. Paper capital ~$13.13 (persists across restarts via DB snapshot). 26 trades in DB (73.1% WR, +$2.63 paper P&L). /report now defaults to all-time stats, /history defaults to 20. /status shows correct 24h P&L from DB, correct % from actual starting capital, correct 3x paper leverage. Real account ($3-4 Binance) and paper simulation fully separated. Current monthly overhead ~$125 (Claude API ~$100 + VPS $25). See Section 17 for break-even analysis — need $1,000–2,000 capital for real profit. At $100 capital → still -$60 to -$90/month (overhead too high); breakeven at ~$150–200 with optimized costs. **Next build phases:** B = Grid Bot (~3.5 weeks), C = Web Dashboard (~4.5 weeks). See Sections 19–20 for full plan.
 
 ### Paper Trade Data as Analysis Source
 All paper trades are saved to DB with FULL context:
